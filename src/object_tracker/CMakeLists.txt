@@ -81,6 +81,35 @@ install(TARGETS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+# Mask-initialized tracker for non-planar targets (KLT + similarity + depth gating)
+add_executable(mask_tracker_node
+  src/mask_tracker_node.cpp
+)
+
+target_include_directories(mask_tracker_node PRIVATE
+  include
+)
+
+ament_target_dependencies(mask_tracker_node
+  rclcpp
+  sensor_msgs
+  geometry_msgs
+  cv_bridge
+  message_filters
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
+)
+
+target_link_libraries(mask_tracker_node
+  ${OpenCV_LIBRARIES}
+)
+
+install(TARGETS
+  mask_tracker_node
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 # Install launch, config and target images
 install(DIRECTORY launch config targets
   DESTINATION share/${PROJECT_NAME}
