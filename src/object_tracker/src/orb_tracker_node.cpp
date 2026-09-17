@@ -21,6 +21,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <deque>
 #include <filesystem>
 #include <limits>
 #include <optional>
@@ -37,6 +38,7 @@ enum class TrackStatus {
     OK,
     WAITING_INTRINSICS,
     IMAGE_ERROR,
+    NO_TARGET,
     NO_FEATURES,
     FEW_MATCHES,
     NO_HOMOGRAPHY,
@@ -72,11 +74,30 @@ enum class TrackSource {
 };
 constexpr size_t kTrackSourceCount = static_cast<size_t>(TrackSource::KLT) + 1;
 
+// Mask init events; counted separately so they never replace a frame's TrackStatus
+enum class InitEvent {
+    MASK_RECEIVED,
+    MASK_FRAME_MISSING,
+    MASK_BAD_SIZE,
+    MASK_TOO_SMALL,
+    MASK_FEW_FEATURES,
+    HANDOFF_OK,
+    HANDOFF_TIMEOUT,
+    HANDOFF_REPLACED,
+};
+constexpr size_t kInitEventCount = static_cast<size_t>(InitEvent::HANDOFF_REPLACED) + 1;
+
+enum class TargetOrigin {
+    IMAGE_FILE,
+    MASK,
+};
+
 const char *to_string(TrackStatus status) {
     switch (status) {
         case TrackStatus::OK: return "OK";
         case TrackStatus::WAITING_INTRINSICS: return "WAITING_INTRINSICS";
         case TrackStatus::IMAGE_ERROR: return "IMAGE_ERROR";
+        case TrackStatus::NO_TARGET: return "NO_TARGET";
         case TrackStatus::NO_FEATURES: return "NO_FEATURES";
         case TrackStatus::FEW_MATCHES: return "FEW_MATCHES";
         case TrackStatus::NO_HOMOGRAPHY: return "NO_HOMOGRAPHY";
@@ -115,6 +136,28 @@ const char *to_string(TrackSource source) {
     return "UNKNOWN";
 }
 
+const char *to_string(InitEvent event) {
+    switch (event) {
+        case InitEvent::MASK_RECEIVED: return "MASK_RECEIVED";
+        case InitEvent::MASK_FRAME_MISSING: return "MASK_FRAME_MISSING";
+        case InitEvent::MASK_BAD_SIZE: return "MASK_BAD_SIZE";
+        case InitEvent::MASK_TOO_SMALL: return "MASK_TOO_SMALL";
+        case InitEvent::MASK_FEW_FEATURES: return "MASK_FEW_FEATURES";
+        case InitEvent::HANDOFF_OK: return "HANDOFF_OK";
+        case InitEvent::HANDOFF_TIMEOUT: return "HANDOFF_TIMEOUT";
+        case InitEvent::HANDOFF_REPLACED: return "HANDOFF_REPLACED";
+    }
+    return "UNKNOWN";
+}
+
+const char *to_string(TargetOrigin origin) {
+    switch (origin) {
+        case TargetOrigin::IMAGE_FILE: return "file";
+        case TargetOrigin::MASK: return "mask";
+    }
+    return "unknown";
+}
+
 struct Detection {
     TrackStatus status = TrackStatus::OK;
     TrackSource source = TrackSource::ORB_FULL;
@@ -129,6 +172,33 @@ struct Detection {
     cv::Mat H;
     std::vector<cv::Point2f> inlier_target_pts;
     std::vector<cv::Point2f> inlier_scene_pts;
+};
+
+// What detection matches against. Model coordinates are target image pixels (file) or pixels of the
+// frame the mask was computed on (mask).
+struct TargetModel {
+    std::vector<cv::KeyPoint> keypoints;
+    cv::Mat descriptors;
+    std::vector<cv::Point2f> corners;  // TL, TR, BR, BL in model coordinates
+    cv::Point2f center;                // published point, in model coordinates
+    cv::Rect2f bounds;                 // file: (0, 0, w, h); mask: bounding rect of the cleaned mask
+    TargetOrigin origin = TargetOrigin::IMAGE_FILE;
+    double source_stamp_s = 0.0;       // stamp of the frame the mask belongs to (0 for file)
+};
+
+// Recent frame kept so a delayed mask can be applied to the frame it was computed on
+struct CachedFrame {
+    double stamp_s = 0.0;
+    cv::Mat gray;
+    cv::Mat depth;
+    std::string depth_encoding;
+};
+
+// Candidate model from a mask, waiting to be found in the current frame
+struct PendingHandoff {
+    TargetModel model;
+    double start_stamp_s = 0.0;  // newest frame stamp when the mask arrived
+    double mask_stamp_s = 0.0;
 };
 
 // Last output we trust, kept while HOLDING
@@ -201,6 +271,14 @@ public:
         this->declare_parameter<double>("hold.full_search_after_s", 0.5);
         this->declare_parameter<int>("hold.confirm_frames", 3);
         this->declare_parameter<bool>("hold.publish", true);
+        this->declare_parameter<bool>("init.enable", false);
+        this->declare_parameter<std::string>("mask_topic", "/tracked_object/init_mask");
+        this->declare_parameter<double>("init.cache_s", 3.0);
+        this->declare_parameter<double>("init.stamp_tolerance_s", 0.005);
+        this->declare_parameter<double>("init.depth_gate_m", 0.04);
+        this->declare_parameter<int>("init.min_mask_px", 400);
+        this->declare_parameter<int>("init.mask_erode_px", 4);
+        this->declare_parameter<double>("init.handoff_timeout_s", 2.0);
         this->declare_parameter<bool>("debug.enable", false);
         this->declare_parameter<bool>("debug.img", false);
 
@@ -251,6 +329,14 @@ public:
         hold_full_search_after_s_ = this->get_parameter("hold.full_search_after_s").as_double();
         hold_confirm_frames_ = std::max(1, static_cast<int>(this->get_parameter("hold.confirm_frames").as_int()));
         hold_publish_ = this->get_parameter("hold.publish").as_bool();
+        init_enable_ = this->get_parameter("init.enable").as_bool();
+        const std::string mask_topic = this->get_parameter("mask_topic").as_string();
+        init_cache_s_ = this->get_parameter("init.cache_s").as_double();
+        init_stamp_tolerance_s_ = this->get_parameter("init.stamp_tolerance_s").as_double();
+        init_depth_gate_m_ = this->get_parameter("init.depth_gate_m").as_double();
+        init_min_mask_px_ = static_cast<int>(this->get_parameter("init.min_mask_px").as_int());
+        init_mask_erode_px_ = std::max(0, static_cast<int>(this->get_parameter("init.mask_erode_px").as_int()));
+        init_handoff_timeout_s_ = this->get_parameter("init.handoff_timeout_s").as_double();
         is_debug_mode_ = this->get_parameter("debug.enable").as_bool();
         image_debug_ = this->get_parameter("debug.img").as_bool();
 
@@ -263,7 +349,11 @@ public:
                         : cv::ORB::create(n_features_full_, 1.2f, 8, kOrbEdgeThreshold, 0, 2, cv::ORB::HARRIS_SCORE,
                                           31, fast_threshold);
         matcher_ = cv::BFMatcher::create(cv::NORM_HAMMING, false);
-        load_target(target_path);
+        if (!target_path.empty()) {
+            model_ = load_target(target_path);
+        } else if (!init_enable_) {
+            throw std::runtime_error("target_image_path is empty; set a target image or enable init.enable to wait for a mask");
+        }
 
         tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
         tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -281,8 +371,20 @@ public:
 
         point_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>(output_topic, 10);
 
-        RCLCPP_INFO(this->get_logger(), "Tracking target '%s' (%zu keypoints), color=%s depth=%s",
-                    target_path.c_str(), target_keypoints_.size(), color_topic.c_str(), depth_topic.c_str());
+        if (init_enable_) {
+            mask_sub_ = this->create_subscription<ImageMsg>(
+                mask_topic, rclcpp::QoS(rclcpp::KeepLast(5)).reliable(),
+                std::bind(&OrbTrackerNode::mask_callback, this, std::placeholders::_1));
+            RCLCPP_INFO(this->get_logger(), "Mask init enabled: %s, frame cache %.1f s", mask_topic.c_str(), init_cache_s_);
+        }
+
+        if (model_) {
+            RCLCPP_INFO(this->get_logger(), "Tracking target '%s' (%zu keypoints), color=%s depth=%s",
+                        target_path.c_str(), model_->keypoints.size(), color_topic.c_str(), depth_topic.c_str());
+        } else {
+            RCLCPP_INFO(this->get_logger(), "No target yet, waiting for a mask; color=%s depth=%s",
+                        color_topic.c_str(), depth_topic.c_str());
+        }
     }
 
 private:
@@ -297,7 +399,7 @@ private:
         }
     }
 
-    void load_target(const std::string &path) {
+    TargetModel load_target(const std::string &path) {
         cv::Mat target = cv::imread(path, cv::IMREAD_GRAYSCALE);
         if (target.empty()) {
             throw std::runtime_error("Cannot read target image: " + path);
@@ -311,26 +413,27 @@ private:
         cv::Mat descriptors;
         orb_->detectAndCompute(padded, cv::noArray(), keypoints, descriptors);
 
+        TargetModel model;
         const cv::Rect2f inside(0.0f, 0.0f, static_cast<float>(target.cols), static_cast<float>(target.rows));
-        target_keypoints_.clear();
-        target_descriptors_.release();
         for (size_t i = 0; i < keypoints.size(); ++i) {
             cv::KeyPoint kp = keypoints[i];
             kp.pt -= cv::Point2f(kOrbEdgeThreshold, kOrbEdgeThreshold);
             if (inside.contains(kp.pt)) {
-                target_keypoints_.push_back(kp);
-                target_descriptors_.push_back(descriptors.row(static_cast<int>(i)));
+                model.keypoints.push_back(kp);
+                model.descriptors.push_back(descriptors.row(static_cast<int>(i)));
             }
         }
-        if (static_cast<int>(target_keypoints_.size()) < min_matches_) {
+        if (static_cast<int>(model.keypoints.size()) < min_matches_) {
             throw std::runtime_error("Target image has too few ORB features (" +
-                                     std::to_string(target_keypoints_.size()) + "), pick a more textured image");
+                                     std::to_string(model.keypoints.size()) + "), pick a more textured image");
         }
         const float w = static_cast<float>(target.cols);
         const float h = static_cast<float>(target.rows);
-        target_size_ = target.size();
-        target_corners_ = {cv::Point2f(0, 0), cv::Point2f(w, 0), cv::Point2f(w, h), cv::Point2f(0, h)};
-        target_center_ = cv::Point2f(w / 2.0f, h / 2.0f);
+        model.bounds = inside;
+        model.corners = {cv::Point2f(0, 0), cv::Point2f(w, 0), cv::Point2f(w, h), cv::Point2f(0, h)};
+        model.center = cv::Point2f(w / 2.0f, h / 2.0f);
+        model.origin = TargetOrigin::IMAGE_FILE;
+        return model;
     }
 
     void camera_info_callback(const sensor_msgs::msg::CameraInfo::SharedPtr msg) {
@@ -349,7 +452,7 @@ private:
 
     // ORB features inside roi (the whole image for ORB_FULL) + ratio test, then homography checks
     // Always returns a result; status tells which check stopped it (OK if all passed)
-    Detection detect_orb(const cv::Mat &gray, const cv::Rect &roi, TrackSource source) {
+    Detection detect_orb(const TargetModel &model, const cv::Mat &gray, const cv::Rect &roi, TrackSource source) {
         Detection det;
         det.source = source;
         cv::Mat scene = gray(roi);
@@ -367,27 +470,28 @@ private:
         }
 
         std::vector<std::vector<cv::DMatch>> knn_matches;
-        matcher_->knnMatch(target_descriptors_, scene_descriptors, knn_matches, 2);
+        matcher_->knnMatch(model.descriptors, scene_descriptors, knn_matches, 2);
 
         // keypoints are in (scaled) roi coordinates; shift back to full image pixels
         const cv::Point2f roi_offset(static_cast<float>(roi.x), static_cast<float>(roi.y));
         std::vector<cv::Point2f> obj_pts, scene_pts;
         for (const auto &m : knn_matches) {
             if (m.size() == 2 && m[0].distance < ratio_test_ * m[1].distance) {
-                obj_pts.push_back(target_keypoints_[m[0].queryIdx].pt);
+                obj_pts.push_back(model.keypoints[m[0].queryIdx].pt);
                 scene_pts.push_back(scene_keypoints[m[0].trainIdx].pt / detect_scale_ + roi_offset);
             }
         }
 
         det.n_matches = static_cast<int>(obj_pts.size());
-        evaluate_homography(obj_pts, scene_pts, min_matches_, min_inliers_, det);
+        evaluate_homography(model, obj_pts, scene_pts, min_matches_, min_inliers_, det);
         return det;
     }
 
-    // RANSAC homography (target -> scene) + sanity checks + gates, shared by ORB and KLT
+    // RANSAC homography (model -> scene) + sanity checks + gates, shared by ORB and KLT
     // Expects det.n_matches == obj_pts.size(); sets det.status (OK if all passed)
-    void evaluate_homography(const std::vector<cv::Point2f> &obj_pts, const std::vector<cv::Point2f> &scene_pts,
-                             int min_matches, int min_inliers, Detection &det) {
+    void evaluate_homography(const TargetModel &model, const std::vector<cv::Point2f> &obj_pts,
+                             const std::vector<cv::Point2f> &scene_pts, int min_matches, int min_inliers,
+                             Detection &det) {
         if (det.n_matches < min_matches) {
             det.status = TrackStatus::FEW_MATCHES;
             return;
@@ -429,9 +533,9 @@ private:
             return;
         }
 
-        cv::perspectiveTransform(target_corners_, det.corners, H);
+        cv::perspectiveTransform(model.corners, det.corners, H);
         det.side_ratio = max_opposite_side_ratio(det.corners);
-        std::vector<cv::Point2f> center_in{target_center_}, center_out;
+        std::vector<cv::Point2f> center_in{model.center}, center_out;
         cv::perspectiveTransform(center_in, center_out, H);
         det.center = center_out[0];
 
@@ -500,13 +604,13 @@ private:
             // an empty last_box_ gives no ROI, so this falls through to the full frame
             debug_roi_ = compute_roi(last_box_, gray.size());
             if (debug_roi_) {
-                Detection det = detect_orb(gray, *debug_roi_, TrackSource::ORB_ROI);
+                Detection det = detect_orb(*model_, gray, *debug_roi_, TrackSource::ORB_ROI);
                 if (det.status == TrackStatus::OK || !roi_full_frame_fallback_) {
                     return det;
                 }
             }
         }
-        return detect_orb(gray, full_frame, TrackSource::ORB_FULL);
+        return detect_orb(*model_, gray, full_frame, TrackSource::ORB_FULL);
     }
 
     // Forward-backward pyramidal LK from the previous frame, then homography from target coords
@@ -536,7 +640,7 @@ private:
             det.status = TrackStatus::KLT_FEW_POINTS;
             return det;
         }
-        evaluate_homography(obj_pts, scene_pts, klt_min_points_, klt_min_points_, det);
+        evaluate_homography(*model_, obj_pts, scene_pts, klt_min_points_, klt_min_points_, det);
         if (det.status == TrackStatus::OK) {
             klt_target_pts_ = det.inlier_target_pts;
             klt_scene_pts_ = det.inlier_scene_pts;
@@ -545,7 +649,7 @@ private:
     }
 
     // Re-seed KLT from an accepted ORB detection: its inliers, plus corners inside the box mapped by H^-1
-    void reseed_klt(const cv::Mat &gray, const Detection &det) {
+    void reseed_klt(const TargetModel &model, const cv::Mat &gray, const Detection &det) {
         if (!klt_enable_) {
             return;
         }
@@ -567,9 +671,8 @@ private:
         // planar assumption: map image corners back onto the target
         std::vector<cv::Point2f> target_pts;
         cv::perspectiveTransform(scene_corners, target_pts, det.H.inv());
-        const cv::Rect2f target_rect(cv::Point2f(0.0f, 0.0f), cv::Size2f(target_size_));
         for (size_t i = 0; i < scene_corners.size(); ++i) {
-            if (target_rect.contains(target_pts[i])) {
+            if (model.bounds.contains(target_pts[i])) {
                 klt_target_pts_.push_back(target_pts[i]);
                 klt_scene_pts_.push_back(scene_corners[i]);
             }
@@ -598,7 +701,7 @@ private:
         Detection det;
         if (orb && orb->status == TrackStatus::OK) {
             det = *orb;
-            reseed_klt(gray, det);
+            reseed_klt(*model_, gray, det);
             frames_since_orb_ok_ = 0;
         } else {
             // KLT result bridges ORB failures; ORB is retried on the next frame
@@ -615,6 +718,255 @@ private:
     void clear_klt_points() {
         klt_target_pts_.clear();
         klt_scene_pts_.clear();
+    }
+
+    // ---- Mask init: build a target from an upstream mask computed on a past frame ----
+
+    void record_event(InitEvent event, double mask_stamp_s, const std::string &detail) {
+        ++event_counts_[static_cast<size_t>(event)];
+        RCLCPP_INFO(this->get_logger(), "Init event %s: mask_stamp=%.3f %s", to_string(event), mask_stamp_s,
+                    detail.c_str());
+    }
+
+    // Ring buffer of the last init.cache_s seconds of processed frames (image stamps).
+    // Memory = frames * (W * H gray + W * H * depth bytes per pixel); at 848x480 with 16UC1 depth that is
+    // 0.41 MB + 0.81 MB = 1.22 MB per frame, so 3 s at 30 fps (90 frames) is about 110 MB.
+    void cache_frame(const cv::Mat &gray, const cv::Mat &depth, const std::string &depth_encoding, double stamp_s) {
+        if (!frame_cache_.empty() && stamp_s < frame_cache_.back().stamp_s) {
+            // stamps went backwards (e.g. a restarted bag); old frames can no longer match a mask
+            frame_cache_.clear();
+        }
+        frame_cache_.push_back(CachedFrame{stamp_s, gray.clone(), depth.clone(), depth_encoding});
+        while (stamp_s - frame_cache_.front().stamp_s > init_cache_s_) {
+            frame_cache_.pop_front();
+        }
+    }
+
+    // Closest cached frame within init.stamp_tolerance_s of the mask stamp, or nullptr
+    const CachedFrame *find_cached_frame(double stamp_s) const {
+        const CachedFrame *best = nullptr;
+        double best_diff = init_stamp_tolerance_s_;
+        for (const auto &frame : frame_cache_) {
+            const double diff = std::abs(frame.stamp_s - stamp_s);
+            if (diff <= best_diff) {
+                best = &frame;
+                best_diff = diff;
+            }
+        }
+        return best;
+    }
+
+    void mask_callback(const ImageMsg::ConstSharedPtr &msg) {
+        const double mask_stamp_s = rclcpp::Time(msg->header.stamp).seconds();
+        record_event(InitEvent::MASK_RECEIVED, mask_stamp_s, cv::format("size=%ux%u", msg->width, msg->height));
+
+        cv::Mat mask;
+        try {
+            mask = cv_bridge::toCvShare(msg, sensor_msgs::image_encodings::MONO8)->image;
+        } catch (cv_bridge::Exception &e) {
+            RCLCPP_ERROR(this->get_logger(), "Mask cv_bridge exception (expected mono8): %s", e.what());
+            return;
+        }
+
+        const CachedFrame *frame = find_cached_frame(mask_stamp_s);
+        if (!frame) {
+            record_event(InitEvent::MASK_FRAME_MISSING, mask_stamp_s,
+                         frame_cache_.empty()
+                             ? std::string("cache empty")
+                             : cv::format("cache %zu frames [%.3f, %.3f], tolerance %.3f s", frame_cache_.size(),
+                                          frame_cache_.front().stamp_s, frame_cache_.back().stamp_s,
+                                          init_stamp_tolerance_s_));
+            return;
+        }
+        if (mask.size() != frame->gray.size()) {
+            record_event(InitEvent::MASK_BAD_SIZE, mask_stamp_s,
+                         cv::format("mask %dx%d, frame %dx%d", mask.cols, mask.rows, frame->gray.cols, frame->gray.rows));
+            return;
+        }
+
+        const std::optional<cv::Mat> cleaned = clean_mask(*frame, mask, mask_stamp_s);
+        if (!cleaned) {
+            return;
+        }
+        std::optional<TargetModel> candidate = build_mask_model(*frame, *cleaned, mask_stamp_s);
+        if (!candidate) {
+            return;  // the current model stays
+        }
+        if (pending_handoff_) {
+            record_event(InitEvent::HANDOFF_REPLACED, mask_stamp_s,
+                         cv::format("replaces mask_stamp=%.3f", pending_handoff_->mask_stamp_s));
+        }
+        pending_handoff_ = PendingHandoff{std::move(*candidate), frame_cache_.back().stamp_s, mask_stamp_s};
+    }
+
+    // Clean a mask on its source frame: drop pixels whose measured depth is far from the mask's median
+    // in-range depth (usually background caught at the edges), then keep the largest connected region.
+    // Returns nullopt (MASK_TOO_SMALL) when fewer than init.min_mask_px pixels remain.
+    std::optional<cv::Mat> clean_mask(const CachedFrame &frame, const cv::Mat &mask, double mask_stamp_s) {
+        cv::Mat cleaned = (mask != 0);
+        const bool is_mm = (frame.depth_encoding == sensor_msgs::image_encodings::TYPE_16UC1 ||
+                            frame.depth_encoding == sensor_msgs::image_encodings::MONO16);
+        auto depth_at = [&](int x, int y) {
+            return is_mm ? frame.depth.at<uint16_t>(y, x) * 0.001 : static_cast<double>(frame.depth.at<float>(y, x));
+        };
+
+        std::vector<double> in_range;
+        for (int y = 0; y < cleaned.rows; ++y) {
+            const uchar *row = cleaned.ptr<uchar>(y);
+            for (int x = 0; x < cleaned.cols; ++x) {
+                const double d = row[x] ? depth_at(x, y) : 0.0;
+                if (row[x] && std::isfinite(d) && d >= depth_min_m_ && d <= depth_max_m_) {
+                    in_range.push_back(d);
+                }
+            }
+        }
+        int n_depth_removed = 0;
+        double d0 = 0.0;
+        if (!in_range.empty()) {
+            std::nth_element(in_range.begin(), in_range.begin() + in_range.size() / 2, in_range.end());
+            d0 = in_range[in_range.size() / 2];
+            for (int y = 0; y < cleaned.rows; ++y) {
+                uchar *row = cleaned.ptr<uchar>(y);
+                for (int x = 0; x < cleaned.cols; ++x) {
+                    if (!row[x]) {
+                        continue;
+                    }
+                    // any measured depth counts, so background beyond depth_max_m is removed too
+                    const double d = depth_at(x, y);
+                    if (std::isfinite(d) && d > 0.0 && std::abs(d - d0) > init_depth_gate_m_) {
+                        row[x] = 0;
+                        ++n_depth_removed;
+                    }
+                }
+            }
+        }
+        // no in-range depth inside the mask (e.g. too far): the depth step is skipped
+
+        cv::Mat labels, stats, centroids;
+        const int n_labels = cv::connectedComponentsWithStats(cleaned, labels, stats, centroids, 8, CV_32S);
+        int best_label = 0;
+        int best_area = 0;
+        for (int i = 1; i < n_labels; ++i) {
+            const int area = stats.at<int>(i, cv::CC_STAT_AREA);
+            if (area > best_area) {
+                best_area = area;
+                best_label = i;
+            }
+        }
+        if (best_area < init_min_mask_px_) {
+            record_event(InitEvent::MASK_TOO_SMALL, mask_stamp_s,
+                         cv::format("pixels=%d (min %d), depth_removed=%d", best_area, init_min_mask_px_, n_depth_removed));
+            return std::nullopt;
+        }
+        const std::string gate_text = in_range.empty() ? std::string("skipped") : cv::format("d0=%.3fm", d0);
+        RCLCPP_INFO(this->get_logger(), "Mask cleaned: mask_stamp=%.3f pixels=%d depth_gate=%s removed=%d",
+                    mask_stamp_s, best_area, gate_text.c_str(), n_depth_removed);
+        return cv::Mat(labels == best_label);
+    }
+
+    // Candidate model from a cleaned mask; model coordinates are pixels of the mask's source frame
+    std::optional<TargetModel> build_mask_model(const CachedFrame &frame, const cv::Mat &cleaned,
+                                                double mask_stamp_s) {
+        TargetModel model;
+        model.origin = TargetOrigin::MASK;
+        model.source_stamp_s = mask_stamp_s;
+
+        std::vector<cv::Point> pixels;
+        cv::findNonZero(cleaned, pixels);
+        const cv::Rect box = cv::boundingRect(pixels);
+        model.bounds = cv::Rect2f(box);
+        const float x0 = static_cast<float>(box.x), y0 = static_cast<float>(box.y);
+        const float x1 = static_cast<float>(box.x + box.width), y1 = static_cast<float>(box.y + box.height);
+        model.corners = {cv::Point2f(x0, y0), cv::Point2f(x1, y0), cv::Point2f(x1, y1), cv::Point2f(x0, y1)};
+
+        const cv::Moments m = cv::moments(cleaned, true);
+        cv::Point2f center(static_cast<float>(m.m10 / m.m00), static_cast<float>(m.m01 / m.m00));
+        const cv::Point center_px(static_cast<int>(std::lround(center.x)), static_cast<int>(std::lround(center.y)));
+        if (!cv::Rect(cv::Point(0, 0), cleaned.size()).contains(center_px) || cleaned.at<uchar>(center_px) == 0) {
+            // centroid outside the mask (e.g. a C shape): use the nearest mask pixel
+            double best_dist = std::numeric_limits<double>::max();
+            cv::Point2f nearest = center;
+            for (const auto &p : pixels) {
+                const double dist = cv::norm(cv::Point2f(p) - center);
+                if (dist < best_dist) {
+                    best_dist = dist;
+                    nearest = cv::Point2f(p);
+                }
+            }
+            center = nearest;
+        }
+        model.center = center;
+
+        // features only well inside the mask, where they are least likely to belong to the background
+        cv::Mat feature_mask = cleaned;
+        if (init_mask_erode_px_ > 0) {
+            const int k = 2 * init_mask_erode_px_ + 1;
+            cv::erode(cleaned, feature_mask, cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(k, k)));
+        }
+        orb_->detectAndCompute(frame.gray, feature_mask, model.keypoints, model.descriptors);
+        if (static_cast<int>(model.keypoints.size()) < min_matches_) {
+            record_event(InitEvent::MASK_FEW_FEATURES, mask_stamp_s,
+                         cv::format("features=%zu (min %d), current model kept", model.keypoints.size(), min_matches_));
+            return std::nullopt;
+        }
+        RCLCPP_INFO(this->get_logger(), "Mask target candidate: mask_stamp=%.3f features=%zu box=%dx%d, waiting for handoff",
+                    mask_stamp_s, model.keypoints.size(), box.width, box.height);
+        return model;
+    }
+
+    // Look for the pending candidate in the whole current frame with the same gates as ORB detection.
+    // While a candidate waits this is one extra full-frame ORB pass per frame, which noticeably raises the
+    // processing time on a Raspberry Pi 5.
+    std::optional<Detection> try_handoff(const cv::Mat &gray, double stamp_s) {
+        if (!pending_handoff_) {
+            return std::nullopt;
+        }
+        Detection det = detect_orb(pending_handoff_->model, gray, cv::Rect(cv::Point(0, 0), gray.size()),
+                                   TrackSource::ORB_FULL);
+        if (det.status == TrackStatus::OK) {
+            return det;
+        }
+        if (stamp_s - pending_handoff_->start_stamp_s > init_handoff_timeout_s_) {
+            record_event(InitEvent::HANDOFF_TIMEOUT, pending_handoff_->mask_stamp_s,
+                         cv::format("waited %.2f s, last status %s", stamp_s - pending_handoff_->start_stamp_s,
+                                    to_string(det.status)));
+            pending_handoff_.reset();
+        }
+        return std::nullopt;
+    }
+
+    // Switch to the candidate that was just found in this frame. The mask comes from the upstream VLM and is
+    // trusted, so CONFIRMING and jump confirmation are skipped. Returns the point to publish, if any.
+    std::optional<Point3> apply_handoff(const cv::Mat &gray, const Detection &det,
+                                        const std::optional<Point3> &measurement, double stamp_s) {
+        const double mask_stamp_s = pending_handoff_->mask_stamp_s;
+        model_ = std::move(pending_handoff_->model);
+        pending_handoff_.reset();
+
+        // tracking data belongs to the old model; restart it from this detection
+        clear_klt_points();
+        prev_gray_ = gray;
+        last_box_ = det.corners;
+        frames_since_orb_ok_ = 0;
+        reseed_klt(*model_, gray, det);
+
+        const double latency_ms = (stamp_s - mask_stamp_s) * 1000.0;
+        handoff_latency_ms_sum_ += latency_ms;
+        ++handoff_latency_count_;
+        last_handoff_stamp_s_ = stamp_s;
+        record_event(InitEvent::HANDOFF_OK, mask_stamp_s,
+                     cv::format("latency=%.0f ms features=%zu inliers=%d%s", latency_ms, model_->keypoints.size(),
+                                det.n_inliers, measurement ? "" : " (no measurement, state reset to LOST)"));
+
+        if (!measurement) {
+            // the held point belongs to the old object; confirm the new one through the normal flow
+            set_lost();
+            return std::nullopt;
+        }
+        std::copy(measurement->begin(), measurement->end(), pose_filtered_);
+        pose_filter_initialized_ = pose_filter_enable_;
+        accept_track(*measurement, det, stamp_s);
+        return measurement;
     }
 
     // Whether KLT / ROI may search near the last box. False when LOST, or when HOLDING for longer than
@@ -918,13 +1270,28 @@ private:
                 source_breakdown += cv::format(" %s=%d", to_string(static_cast<TrackSource>(i)), source_counts_[i]);
             }
         }
+        std::string init_breakdown;
+        if (init_enable_) {
+            init_breakdown = " | init:";
+            for (size_t i = 0; i < kInitEventCount; ++i) {
+                if (event_counts_[i] > 0) {
+                    init_breakdown += cv::format(" %s=%d", to_string(static_cast<InitEvent>(i)), event_counts_[i]);
+                }
+            }
+            init_breakdown += handoff_latency_count_ > 0
+                                  ? cv::format(" handoff_latency_avg=%.0fms", handoff_latency_ms_sum_ / handoff_latency_count_)
+                                  : std::string(" handoff_latency_avg=-");
+            event_counts_.fill(0);
+            handoff_latency_ms_sum_ = 0.0;
+            handoff_latency_count_ = 0;
+        }
         const double avg_ms = process_count_ > 0 ? process_ms_sum_ / process_count_ : 0.0;
         const int n_ok = status_counts_[static_cast<size_t>(TrackStatus::OK)];
         RCLCPP_INFO(this->get_logger(),
                     "Track stats: %d frames, success %.1f%% |%s | state:%s | source:%s | depth_fb=%d"
-                    " | time: avg %.1f ms, max %.1f ms",
+                    " | time: avg %.1f ms, max %.1f ms%s",
                     total, 100.0 * n_ok / total, breakdown.c_str(), state_breakdown.c_str(),
-                    source_breakdown.c_str(), depth_fallback_count_, avg_ms, process_ms_max_);
+                    source_breakdown.c_str(), depth_fallback_count_, avg_ms, process_ms_max_, init_breakdown.c_str());
         depth_fallback_count_ = 0;
         status_counts_.fill(0);
         state_counts_.fill(0);
@@ -959,16 +1326,33 @@ private:
             status = TrackStatus::IMAGE_ERROR;
         }
 
+        const double stamp_s = rclcpp::Time(color_msg->header.stamp).seconds();
         Detection det;
-        const bool ran_detection = (status == TrackStatus::OK);
+        cv::Mat gray;
+        bool ran_detection = false;
+        bool handoff_found = false;
         std::optional<double> process_ms;
-        if (ran_detection) {
+        if (status == TrackStatus::OK) {
             const auto t_start = std::chrono::steady_clock::now();
-            cv::Mat gray;
             cv::cvtColor(color, gray, cv::COLOR_BGR2GRAY);
-            det = detect_frame(gray);
+            if (model_) {
+                det = detect_frame(gray);
+                status = det.status;
+                ran_detection = true;
+            } else {
+                status = TrackStatus::NO_TARGET;
+            }
+            // a pending mask candidate found in this frame replaces the current model's result
+            if (std::optional<Detection> handoff = try_handoff(gray, stamp_s)) {
+                det = std::move(*handoff);
+                status = det.status;
+                ran_detection = true;
+                handoff_found = true;
+            }
             process_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_start).count();
-            status = det.status;
+            if (init_enable_) {
+                cache_frame(gray, depth, depth_msg->encoding, stamp_s);
+            }
         }
         const bool found = (status == TrackStatus::OK);
 
@@ -1016,8 +1400,8 @@ private:
             }
         }
 
-        const double stamp_s = rclcpp::Time(color_msg->header.stamp).seconds();
-        const std::optional<Point3> output = update_track_state(status, det, measurement, stamp_s);
+        const std::optional<Point3> output = handoff_found ? apply_handoff(gray, det, measurement, stamp_s)
+                                                           : update_track_state(status, det, measurement, stamp_s);
         if (output) {
             publish_point(*output, color_msg->header);
         }
@@ -1086,10 +1470,23 @@ private:
             const int font = cv::FONT_HERSHEY_SIMPLEX;
             const double font_scale = 0.6;
             const int thickness = 2;
-            cv::putText(vis, cv::format("%s %s %s%s", to_string(state_), to_string(status),
+            cv::putText(vis, cv::format("%s %s %s%s %s", to_string(state_), to_string(status),
                                         ran_detection ? to_string(det.source) : "-",
-                                        state_ == TrackState::HOLDING && full_search ? " FULL_SEARCH" : ""),
+                                        state_ == TrackState::HOLDING && full_search ? " FULL_SEARCH" : "",
+                                        model_ ? to_string(model_->origin) : "none"),
                         cv::Point(10, 25), font, font_scale, state_color, thickness);
+            // top right: waiting candidate, or a recent switch to a new target
+            std::string init_text;
+            if (pending_handoff_) {
+                init_text = cv::format("HANDOFF %.1fs", stamp_s - pending_handoff_->start_stamp_s);
+            } else if (last_handoff_stamp_s_ && stamp_s - *last_handoff_stamp_s_ < 1.0) {
+                init_text = "NEW TARGET";
+            }
+            if (!init_text.empty()) {
+                const int text_width = cv::getTextSize(init_text, font, font_scale, thickness, nullptr).width;
+                cv::putText(vis, init_text, cv::Point(vis.cols - text_width - 10, 25), font, font_scale,
+                            cv::Scalar(255, 0, 255), thickness);
+            }
             const std::array<std::pair<std::string, const char *>, 7> metrics = {{
                 {cv::format("m=%d", det.n_matches), "m=0000"},
                 {cv::format("i=%d", det.n_inliers), "i=0000"},
@@ -1124,11 +1521,23 @@ private:
     cv::Ptr<cv::ORB> orb_;       // target and ROI search
     cv::Ptr<cv::ORB> orb_full_;  // full-frame search (orb.n_features_full)
     cv::Ptr<cv::BFMatcher> matcher_;
-    std::vector<cv::KeyPoint> target_keypoints_;
-    cv::Mat target_descriptors_;
-    cv::Size target_size_;
-    std::vector<cv::Point2f> target_corners_;
-    cv::Point2f target_center_;
+    std::optional<TargetModel> model_;  // empty until a mask arrives when target_image_path is ""
+
+    // Mask init
+    bool init_enable_ = false;
+    double init_cache_s_ = 3.0;
+    double init_stamp_tolerance_s_ = 0.005;
+    double init_depth_gate_m_ = 0.04;
+    int init_min_mask_px_ = 400;
+    int init_mask_erode_px_ = 4;
+    double init_handoff_timeout_s_ = 2.0;
+    rclcpp::Subscription<ImageMsg>::SharedPtr mask_sub_;
+    std::deque<CachedFrame> frame_cache_;
+    std::optional<PendingHandoff> pending_handoff_;
+    std::optional<double> last_handoff_stamp_s_;
+    std::array<int, kInitEventCount> event_counts_{};
+    double handoff_latency_ms_sum_ = 0.0;
+    int handoff_latency_count_ = 0;
 
     // Detection params
     int n_features_ = 1000;

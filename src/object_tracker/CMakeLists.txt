@@ -61,6 +61,26 @@ install(TARGETS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+# Development tool: simulates upstream VLM masks
+add_executable(mask_init_tool
+  src/mask_init_tool.cpp
+)
+
+ament_target_dependencies(mask_init_tool
+  rclcpp
+  sensor_msgs
+  cv_bridge
+)
+
+target_link_libraries(mask_init_tool
+  ${OpenCV_LIBRARIES}
+)
+
+install(TARGETS
+  mask_init_tool
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 # Install launch, config and target images
 install(DIRECTORY launch config targets
   DESTINATION share/${PROJECT_NAME}

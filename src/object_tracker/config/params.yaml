@@ -75,6 +75,18 @@
     hold.confirm_frames: 3     # consecutive consistent frames to start tracking or accept a jump
     hold.publish: true         # publish the held point while HOLDING
 
+    # Mask init: build the target from an upstream mask (simulated by mask_init_tool for now)
+    # mask: sensor_msgs/Image mono8, same size as color, non-zero = object, header.stamp = stamp of the color frame it belongs to
+    # Initial guesses: tune with the "init:" part of "Track stats"
+    init.enable: false               # false: no mask subscription and no frame cache (file target only)
+    mask_topic: "/tracked_object/init_mask"
+    init.cache_s: 3.0                # keep this many seconds of processed frames (about 1.2 MB per 848x480 frame)
+    init.stamp_tolerance_s: 0.005    # max |mask stamp - cached frame stamp|
+    init.depth_gate_m: 0.04          # drop mask pixels whose depth differs from the mask median by more than this
+    init.min_mask_px: 400            # largest connected region must have at least this many pixels
+    init.mask_erode_px: 4            # shrink the mask before extracting ORB features
+    init.handoff_timeout_s: 2.0      # give up a candidate not found in the current frame within this time
+
     # Debug
     debug.enable: true
     debug.img: true

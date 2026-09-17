@@ -14,13 +14,23 @@ from launch_ros.actions import Node
 #   2. params file (params_file argument, default config/params.yaml)
 #   3. NODE_ARG_DEFAULTS below
 #   4. declare_parameter defaults inside orb_tracker_node
-# Node-parameter launch arguments default to "" meaning "not given on the command line",
-# so they never override the params file.
+# Node-parameter launch arguments default to UNSET meaning "not given on the command line",
+# so they never override the params file. An explicit empty value (e.g. target_image_path:='') is passed on.
+UNSET = "<params_file>"
 NODE_ARG_DEFAULTS = {
     "target_image_path": "target.png",
     "world_frame": "map",
+    "init.enable": "false",
     "debug.enable": "true",
     "debug.img": "false",
+}
+
+# mask_init_tool parameters that can be given on the command line (value = type reference)
+TOOL_PARAM_DEFAULTS = {
+    "cache_s": 3.0,
+    "delay_s": 1.5,
+    "use_grabcut": True,
+    "grabcut_iters": 3,
 }
 
 ARGUMENTS = [
@@ -33,15 +43,34 @@ ARGUMENTS = [
     # Basic arguments (node parameters)
     DeclareLaunchArgument(
         "target_image_path",
-        default_value="",
+        default_value=UNSET,
         description="Target image: absolute path, or file name under share/object_tracker/targets "
                     "(empty = params file, else 'target.png')",
     ),
     DeclareLaunchArgument(
         "world_frame",
-        default_value="",
+        default_value=UNSET,
         description="Output frame; the robot TF tree must connect it to camera_link. Use camera_link for bench tests "
                     "(empty = params file, else 'map')",
+    ),
+
+    DeclareLaunchArgument(
+        "use_sim_time",
+        default_value="false",
+        description="Use /clock (bag replay with --clock); passed to the tracker and mask_init_tool",
+    ),
+
+    # Mask init (simulated upstream VLM masks)
+    DeclareLaunchArgument(
+        "init.enable",
+        default_value=UNSET,
+        description="Subscribe to masks and build targets from them (unset = params file, else false)",
+    ),
+    DeclareLaunchArgument(
+        "launch_init_tool",
+        default_value="false",
+        description="Also start mask_init_tool (needs a display); delay_s:=, cache_s:=, use_grabcut:=, "
+                    "grabcut_iters:= are passed to it",
     ),
 
     # RealSense camera
@@ -78,12 +107,12 @@ ARGUMENTS = [
     # Debug arguments (node parameters)
     DeclareLaunchArgument(
         "debug.enable",
-        default_value="",
+        default_value=UNSET,
         description="Enable debug log and tracked_object TF (empty = params file, else true)",
     ),
     DeclareLaunchArgument(
         "debug.img",
-        default_value="",
+        default_value=UNSET,
         description="Enable image show for debugging (empty = params file, else false)",
     ),
 ]
@@ -103,6 +132,9 @@ def load_node_params(path):
 def parse_value(text, reference=None):
     """Parse a command-line string like YAML; follow the params file type so 100 stays a double."""
     value = yaml.safe_load(text)
+    if isinstance(reference, str):
+        # keep text like "123" as a string; "''" (ros2 launch rejects a bare empty value) becomes ""
+        return value if isinstance(value, str) else text
     if isinstance(reference, float) and isinstance(value, int) and not isinstance(value, bool):
         return float(value)
     if isinstance(reference, str) and not isinstance(value, str):
@@ -117,13 +149,17 @@ def launch_setup(context):
     # layer 3: launch defaults, only for keys the params file does not set
     launch_defaults = {k: parse_value(v) for k, v in NODE_ARG_DEFAULTS.items()}
 
-    # layer 1: command-line values; declared node arguments are "" unless given, other node
+    # layer 1: command-line values; declared node arguments are UNSET unless given, other node
     # parameters only exist in the launch configurations when passed on the command line
     overrides = {}
     for key in set(file_params) | set(NODE_ARG_DEFAULTS):
-        text = context.launch_configurations.get(key, "")
-        if text != "":
-            overrides[key] = parse_value(text, file_params.get(key))
+        text = context.launch_configurations.get(key, UNSET)
+        if text == UNSET:
+            continue
+        value = parse_value(text, file_params.get(key, launch_defaults.get(key)))
+        if value is not None:
+            overrides[key] = value
+    use_sim_time = parse_value(LaunchConfiguration("use_sim_time").perform(context), False)
 
     # same priority for the frame used by the static TF
     world_frame = str(overrides.get("world_frame", file_params.get("world_frame", launch_defaults["world_frame"])))
@@ -133,7 +169,30 @@ def launch_setup(context):
         executable='orb_tracker_node',
         name='orb_tracker_node',
         output='screen',
-        parameters=[launch_defaults, params_file, overrides],
+        parameters=[launch_defaults, params_file, overrides, {'use_sim_time': use_sim_time}],
+    )
+
+    # the tool talks to the tracker, so it uses the tracker's effective topics
+    def effective(key, default):
+        return overrides.get(key, file_params.get(key, default))
+
+    tool_params = {
+        'color_topic': effective('color_topic', '/camera/camera/color/image_rect_raw'),
+        'mask_topic': effective('mask_topic', '/tracked_object/init_mask'),
+        'use_sim_time': use_sim_time,
+    }
+    for key, reference in TOOL_PARAM_DEFAULTS.items():
+        text = context.launch_configurations.get(key)
+        if text:
+            tool_params[key] = parse_value(text, reference)
+
+    mask_init_tool = Node(
+        package='object_tracker',
+        executable='mask_init_tool',
+        name='mask_init_tool',
+        output='screen',
+        condition=IfCondition(LaunchConfiguration("launch_init_tool")),
+        parameters=[tool_params],
     )
 
     camera_static_tf = Node(
@@ -154,7 +213,7 @@ def launch_setup(context):
         ],
     )
 
-    return [camera_static_tf, orb_tracker_node]
+    return [camera_static_tf, orb_tracker_node, mask_init_tool]
 
 
 def generate_launch_description():
