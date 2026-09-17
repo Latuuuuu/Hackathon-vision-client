@@ -1,0 +1,6 @@
+*.md
+prompts/*
+log/*
+install/*
+build/*
+!README.md
