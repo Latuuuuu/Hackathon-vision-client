@@ -18,6 +18,7 @@
     vlm.ping_period_s: 2.0            # 0 = off; measures network-only latency and picks up query_version changes
     vlm.no_query_backoff_s: 0.1       # wait this long after the server answers NO_QUERY
     vlm.error_backoff_s: 2.0          # wait this long after ERROR (e.g. "model loading") instead of resending at once
+    vlm.max_frame_age_s: 1.0          # do not send when the latest color frame arrived longer ago (camera stalled); 0 = off
 
     debug.enable: true                # one "VLM stats" line every 2 s
 

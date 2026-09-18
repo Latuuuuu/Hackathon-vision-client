@@ -75,6 +75,7 @@ public:
         this->declare_parameter<double>("vlm.ping_period_s", 2.0);
         this->declare_parameter<double>("vlm.no_query_backoff_s", 5.0);
         this->declare_parameter<double>("vlm.error_backoff_s", 2.0);
+        this->declare_parameter<double>("vlm.max_frame_age_s", 1.0);
         this->declare_parameter<bool>("debug.enable", true);
 
         color_topic_ = this->get_parameter("color_topic").as_string();
@@ -88,6 +89,7 @@ public:
         ping_period_s_ = this->get_parameter("vlm.ping_period_s").as_double();
         no_query_backoff_s_ = this->get_parameter("vlm.no_query_backoff_s").as_double();
         error_backoff_s_ = this->get_parameter("vlm.error_backoff_s").as_double();
+        max_frame_age_s_ = this->get_parameter("vlm.max_frame_age_s").as_double();
         is_debug_mode_ = this->get_parameter("debug.enable").as_bool();
 
         color_sub_ = this->create_subscription<ImageMsg>(
@@ -118,6 +120,7 @@ private:
             std::lock_guard<std::mutex> lock(frame_mutex_);
             latest_image_ = cv_ptr->image;
             latest_header_ = msg->header;
+            latest_received_at_ = std::chrono::steady_clock::now();
         } catch (cv_bridge::Exception &e) {
             RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
         }
@@ -221,12 +224,25 @@ private:
         }
     }
 
-    // JPEG of the latest frame, scaled to vlm.upload_max_width
+    // JPEG of the latest frame, scaled to vlm.upload_max_width. Fails when no frame arrived yet, or when the
+    // latest one arrived more than vlm.max_frame_age_s ago (camera stalled): the trackers only cache the last
+    // init.cache_s seconds, so a mask for a stale frame would only end as MASK_FRAME_MISSING.
     bool encode_latest(std::vector<uchar> &jpeg, SentFrame &frame, double &encode_ms) {
         cv::Mat image;
         {
             std::lock_guard<std::mutex> lock(frame_mutex_);
             if (latest_image_.empty()) {
+                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000, "Waiting for %s...",
+                                     color_topic_.c_str());
+                return false;
+            }
+            const double age_s =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - latest_received_at_).count();
+            if (max_frame_age_s_ > 0.0 && age_s > max_frame_age_s_) {
+                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                                     "No new frame on %s for %.1f s (last stamp=%.3f), not sending; "
+                                     "is the camera still publishing?",
+                                     color_topic_.c_str(), age_s, rclcpp::Time(latest_header_.stamp).seconds());
                 return false;
             }
             image = latest_image_;
@@ -253,8 +269,6 @@ private:
         SentFrame frame;
         double encode_ms = 0.0;
         if (!encode_latest(jpeg, frame, encode_ms)) {
-            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000, "Waiting for %s...",
-                                 color_topic_.c_str());
             next_send_at_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
             return;
         }
@@ -487,11 +501,13 @@ private:
     double ping_period_s_ = 2.0;
     double no_query_backoff_s_ = 5.0;
     double error_backoff_s_ = 2.0;
+    double max_frame_age_s_ = 1.0;
     bool is_debug_mode_ = true;
 
     std::mutex frame_mutex_;
     cv::Mat latest_image_;
     std_msgs::msg::Header latest_header_;
+    std::chrono::steady_clock::time_point latest_received_at_{};
 
     std::thread network_thread_;
     std::atomic<bool> running_{true};
