@@ -39,7 +39,13 @@
     min_depth_points: 5              # inliers with real depth needed for a measured 3D point
     depth_min_m: 0.07                # D405 ideal range is about 7-50 cm
     depth_max_m: 0.5
-    depth_fallback.enable: true      # too far (no in-range depth, not mostly too near): use value_m along the median pixel ray
+    depth_fallback.enable: true      # too far (no in-range depth, not mostly too near): use value_m along the output pixel ray
+
+    # Output point
+    output.center_mode: "mask_center"  # mask_center: mask centroid moved by the similarity (stays on the object axis);
+                                       # features: median of the inlier points (old; leans toward the textured side)
+    output.center_depth_window: 5      # depth window at the center (max 7); used when within depth_gate_m of the
+                                       # inliers' median depth, else that median is used
     depth_fallback.value_m: 0.5
     depth_fallback.max_region_area_px: 0.0  # > 0: only for regions this small (far objects look small); 0 = no check
 

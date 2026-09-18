@@ -129,6 +129,7 @@ ament_target_dependencies(vlm_bridge_node
 )
 
 target_include_directories(vlm_bridge_node PRIVATE
+  include
   ${ZMQ_INCLUDE_DIRS}
 )
 
@@ -138,8 +139,37 @@ target_link_libraries(vlm_bridge_node
   nlohmann_json::nlohmann_json
 )
 
+# mask_tracker_node with the VLM client built in: the color image is subscribed only once
+add_executable(mask_tracker_vlm_node
+  src/mask_tracker_vlm_node.cpp
+)
+
+target_include_directories(mask_tracker_vlm_node PRIVATE
+  include
+  ${ZMQ_INCLUDE_DIRS}
+)
+
+ament_target_dependencies(mask_tracker_vlm_node
+  rclcpp
+  image_transport
+  sensor_msgs
+  geometry_msgs
+  cv_bridge
+  message_filters
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
+)
+
+target_link_libraries(mask_tracker_vlm_node
+  ${OpenCV_LIBRARIES}
+  ${ZMQ_LIBRARIES}
+  nlohmann_json::nlohmann_json
+)
+
 install(TARGETS
   vlm_bridge_node
+  mask_tracker_vlm_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

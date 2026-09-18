@@ -5,6 +5,7 @@
 #include <opencv2/opencv.hpp>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -181,6 +182,33 @@ inline std::vector<cv::Point2f> mask_polygon(const cv::Mat &mask) {
     std::vector<cv::Point> approx;
     cv::approxPolyDP(*largest, approx, 2.0, true);
     return std::vector<cv::Point2f>(approx.begin(), approx.end());
+}
+
+// Geometric center of the mask: the centroid, or the nearest mask pixel when the centroid falls outside it
+// (e.g. a C shape). Independent of where the texture is, unlike a median of feature points.
+// Same rule as orb_tracker_node::build_mask_model.
+inline cv::Point2f mask_center(const cv::Mat &mask) {
+    const cv::Moments m = cv::moments(mask, true);
+    if (m.m00 <= 0.0) {
+        return cv::Point2f(0.0f, 0.0f);
+    }
+    const cv::Point2f centroid(static_cast<float>(m.m10 / m.m00), static_cast<float>(m.m01 / m.m00));
+    const cv::Point px(static_cast<int>(std::lround(centroid.x)), static_cast<int>(std::lround(centroid.y)));
+    if (cv::Rect(cv::Point(0, 0), mask.size()).contains(px) && mask.at<uchar>(px) != 0) {
+        return centroid;
+    }
+    std::vector<cv::Point> pixels;
+    cv::findNonZero(mask, pixels);
+    cv::Point2f nearest = centroid;
+    double best_dist = std::numeric_limits<double>::max();
+    for (const auto &p : pixels) {
+        const double dist = cv::norm(cv::Point2f(p) - centroid);
+        if (dist < best_dist) {
+            best_dist = dist;
+            nearest = cv::Point2f(p);
+        }
+    }
+    return nearest;
 }
 
 // Scale of a 2x3 similarity [s cos, -s sin, tx; s sin, s cos, ty]
