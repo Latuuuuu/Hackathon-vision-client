@@ -13,6 +13,7 @@
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>cv_bridge</depend>
+  <depend>image_transport</depend>
   <depend>message_filters</depend>
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
@@ -25,6 +26,8 @@
 
   <exec_depend>opencv</exec_depend>
   <exec_depend>python3-zmq</exec_depend>
+  <!-- compressed debug image (image_transport plugin) -->
+  <exec_depend>compressed_image_transport</exec_depend>
   <exec_depend>realsense2_camera</exec_depend>
 
   <export>

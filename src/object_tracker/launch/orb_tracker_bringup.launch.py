@@ -113,7 +113,7 @@ ARGUMENTS = [
     DeclareLaunchArgument(
         "debug.img",
         default_value=UNSET,
-        description="Enable image show for debugging (empty = params file, else false)",
+        description="Publish the debug image on debug.image_topic (empty = params file, else false)",
     ),
 ]
 

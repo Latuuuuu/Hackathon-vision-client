@@ -5,6 +5,7 @@
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <cv_bridge/cv_bridge.h>
+#include <image_transport/image_transport.hpp>
 #include <message_filters/subscriber.h>
 #include <message_filters/synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
@@ -256,6 +257,9 @@ public:
         this->declare_parameter<bool>("hold.publish", true);
         this->declare_parameter<bool>("debug.enable", true);
         this->declare_parameter<bool>("debug.img", false);
+        this->declare_parameter<std::string>("debug.image_topic", "/tracked_object/debug_image");
+        this->declare_parameter<double>("debug.image_rate_hz", 5.0);
+        this->declare_parameter<bool>("debug.window", false);
 
         const std::string color_topic = this->get_parameter("color_topic").as_string();
         const std::string depth_topic = this->get_parameter("depth_topic").as_string();
@@ -303,6 +307,8 @@ public:
         hold_publish_ = this->get_parameter("hold.publish").as_bool();
         is_debug_mode_ = this->get_parameter("debug.enable").as_bool();
         image_debug_ = this->get_parameter("debug.img").as_bool();
+        debug_image_rate_hz_ = this->get_parameter("debug.image_rate_hz").as_double();
+        debug_window_ = this->get_parameter("debug.window").as_bool();
 
         const int fast_threshold = static_cast<int>(this->get_parameter("orb.fast_threshold").as_int());
         auto make_orb = [fast_threshold](int n_features) {
@@ -331,6 +337,13 @@ public:
             std::bind(&MaskTrackerNode::mask_callback, this, std::placeholders::_1));
 
         point_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>(output_topic, 10);
+        if (image_debug_) {
+            const std::string debug_topic = this->get_parameter("debug.image_topic").as_string();
+            debug_image_pub_ = image_transport::create_publisher(this, debug_topic);
+            RCLCPP_INFO(this->get_logger(), "Debug image on %s (and %s/compressed), up to %.1f Hz%s",
+                        debug_topic.c_str(), debug_topic.c_str(), debug_image_rate_hz_,
+                        debug_window_ ? ", plus a window" : "");
+        }
 
         RCLCPP_INFO(this->get_logger(), "No model yet, waiting for a mask on %s; color=%s depth=%s, frame cache %.1f s",
                     mask_topic.c_str(), color_topic.c_str(), depth_topic.c_str(), init_cache_s_);
@@ -1222,13 +1235,42 @@ private:
                         out.depth_fallback ? " (depth fallback)" : "");
         }
 
-        if (image_debug_ && !color.empty()) {
-            draw_debug(color, det, out, status, found, has_output_point, searched, process_ms, stamp_s);
+        if (image_debug_ && !color.empty() && debug_image_due()) {
+            draw_debug(color, color_msg->header, det, out, status, found, has_output_point, searched, process_ms,
+                       stamp_s);
         }
     }
 
-    void draw_debug(const cv::Mat &color, const Detection &det, const Output3D &out, TrackStatus status, bool found,
-                    bool has_output_point, bool searched, std::optional<double> process_ms, double stamp_s) {
+
+    // Debug image goes to debug.image_topic (image_transport, so .../compressed exists for viewing over WiFi).
+    // Drawing is skipped unless someone subscribes (or debug.window is on), and limited to debug.image_rate_hz.
+    bool debug_image_due() {
+        if (!debug_window_ && debug_image_pub_.getNumSubscribers() == 0) {
+            return false;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (debug_image_rate_hz_ > 0.0 &&
+            now - last_debug_image_at_ < std::chrono::duration<double>(1.0 / debug_image_rate_hz_)) {
+            return false;
+        }
+        last_debug_image_at_ = now;
+        return true;
+    }
+
+    void publish_debug_image(const cv::Mat &vis, const std_msgs::msg::Header &header) {
+        if (debug_image_pub_.getNumSubscribers() > 0) {
+            debug_image_pub_.publish(cv_bridge::CvImage(header, sensor_msgs::image_encodings::BGR8, vis).toImageMsg());
+        }
+        if (debug_window_) {
+            // desktop only; needs a display
+            cv::imshow("Mask Tracker", vis);
+            cv::waitKey(1);
+        }
+    }
+
+    void draw_debug(const cv::Mat &color, const std_msgs::msg::Header &header, const Detection &det,
+                    const Output3D &out, TrackStatus status, bool found, bool has_output_point, bool searched,
+                    std::optional<double> process_ms, double stamp_s) {
         const cv::Scalar green(0, 255, 0), yellow(0, 255, 255), orange(0, 165, 255), red(0, 0, 255);
         const cv::Scalar cyan(255, 255, 0), blue(255, 0, 0), magenta(255, 0, 255);
         const cv::Scalar state_color = state_ == TrackState::TRACKING   ? green
@@ -1306,8 +1348,7 @@ private:
             const int text_width = cv::getTextSize(init_text, font, font_scale, thickness, nullptr).width;
             cv::putText(vis, init_text, cv::Point(vis.cols - text_width - 10, 25), font, font_scale, magenta, thickness);
         }
-        cv::imshow("Mask Tracker", vis);
-        cv::waitKey(1);
+        publish_debug_image(vis, header);
     }
 
     // ROS interfaces
@@ -1398,6 +1439,12 @@ private:
 
     bool is_debug_mode_ = true;
     bool image_debug_ = false;
+
+    // Debug image output
+    image_transport::Publisher debug_image_pub_;
+    double debug_image_rate_hz_ = 5.0;
+    bool debug_window_ = false;
+    std::chrono::steady_clock::time_point last_debug_image_at_{};
 
     // Stats (debug only)
     std::array<int, kTrackStatusCount> status_counts_{};

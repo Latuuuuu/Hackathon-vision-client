@@ -5,6 +5,7 @@
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <cv_bridge/cv_bridge.h>
+#include <image_transport/image_transport.hpp>
 #include <message_filters/subscriber.h>
 #include <message_filters/synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
@@ -281,6 +282,9 @@ public:
         this->declare_parameter<double>("init.handoff_timeout_s", 2.0);
         this->declare_parameter<bool>("debug.enable", false);
         this->declare_parameter<bool>("debug.img", false);
+        this->declare_parameter<std::string>("debug.image_topic", "/tracked_object/debug_image");
+        this->declare_parameter<double>("debug.image_rate_hz", 5.0);
+        this->declare_parameter<bool>("debug.window", false);
 
         const std::string target_path = resolve_target_path(this->get_parameter("target_image_path").as_string());
         const std::string color_topic = this->get_parameter("color_topic").as_string();
@@ -339,6 +343,8 @@ public:
         init_handoff_timeout_s_ = this->get_parameter("init.handoff_timeout_s").as_double();
         is_debug_mode_ = this->get_parameter("debug.enable").as_bool();
         image_debug_ = this->get_parameter("debug.img").as_bool();
+        debug_image_rate_hz_ = this->get_parameter("debug.image_rate_hz").as_double();
+        debug_window_ = this->get_parameter("debug.window").as_bool();
 
         const int fast_threshold = this->get_parameter("orb.fast_threshold").as_int();
         orb_ = cv::ORB::create(n_features_, 1.2f, 8, kOrbEdgeThreshold, 0, 2, cv::ORB::HARRIS_SCORE, 31, fast_threshold);
@@ -370,6 +376,13 @@ public:
                                           std::placeholders::_1, std::placeholders::_2));
 
         point_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>(output_topic, 10);
+        if (image_debug_) {
+            const std::string debug_topic = this->get_parameter("debug.image_topic").as_string();
+            debug_image_pub_ = image_transport::create_publisher(this, debug_topic);
+            RCLCPP_INFO(this->get_logger(), "Debug image on %s (and %s/compressed), up to %.1f Hz%s",
+                        debug_topic.c_str(), debug_topic.c_str(), debug_image_rate_hz_,
+                        debug_window_ ? ", plus a window" : "");
+        }
 
         if (init_enable_) {
             mask_sub_ = this->create_subscription<ImageMsg>(
@@ -1302,6 +1315,33 @@ private:
         stats_start_ = now;
     }
 
+
+    // Debug image goes to debug.image_topic (image_transport, so .../compressed exists for viewing over WiFi).
+    // Drawing is skipped unless someone subscribes (or debug.window is on), and limited to debug.image_rate_hz.
+    bool debug_image_due() {
+        if (!debug_window_ && debug_image_pub_.getNumSubscribers() == 0) {
+            return false;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (debug_image_rate_hz_ > 0.0 &&
+            now - last_debug_image_at_ < std::chrono::duration<double>(1.0 / debug_image_rate_hz_)) {
+            return false;
+        }
+        last_debug_image_at_ = now;
+        return true;
+    }
+
+    void publish_debug_image(const cv::Mat &vis, const std_msgs::msg::Header &header) {
+        if (debug_image_pub_.getNumSubscribers() > 0) {
+            debug_image_pub_.publish(cv_bridge::CvImage(header, sensor_msgs::image_encodings::BGR8, vis).toImageMsg());
+        }
+        if (debug_window_) {
+            // desktop only; needs a display
+            cv::imshow("ORB Tracker", vis);
+            cv::waitKey(1);
+        }
+    }
+
     void rgbd_callback(const ImageMsg::ConstSharedPtr &color_msg, const ImageMsg::ConstSharedPtr &depth_msg) {
         if (!has_intrinsics_) {
             RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Waiting for camera_info...");
@@ -1427,7 +1467,7 @@ private:
                         (*output)[0], (*output)[1], (*output)[2], depth_fallback ? " (depth fallback)" : "");
         }
 
-        if (image_debug_ && !color.empty()) {
+        if (image_debug_ && !color.empty() && debug_image_due()) {
             const cv::Scalar green(0, 255, 0), yellow(0, 255, 255), orange(0, 165, 255), red(0, 0, 255);
             const cv::Scalar cyan(255, 255, 0), blue(255, 0, 0);
             const cv::Scalar state_color = state_ == TrackState::TRACKING   ? green
@@ -1501,8 +1541,7 @@ private:
                 cv::putText(vis, text, cv::Point(column_x, 50), font, font_scale, state_color, thickness);
                 column_x += cv::getTextSize(widest, font, font_scale, thickness, nullptr).width + 15;
             }
-            cv::imshow("ORB Tracker", vis);
-            cv::waitKey(1);
+            publish_debug_image(vis, color_msg->header);
         }
     }
 
@@ -1604,6 +1643,12 @@ private:
 
     bool is_debug_mode_ = false;
     bool image_debug_ = false;
+
+    // Debug image output
+    image_transport::Publisher debug_image_pub_;
+    double debug_image_rate_hz_ = 5.0;
+    bool debug_window_ = false;
+    std::chrono::steady_clock::time_point last_debug_image_at_{};
 
     // Status stats (debug only)
     std::array<int, kTrackStatusCount> status_counts_{};

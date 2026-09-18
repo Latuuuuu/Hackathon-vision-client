@@ -10,6 +10,7 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
+find_package(image_transport REQUIRED)
 find_package(message_filters REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
@@ -27,6 +28,7 @@ add_executable(orb_tracker_node
 
 ament_target_dependencies(orb_tracker_node
   rclcpp
+  image_transport
   sensor_msgs
   geometry_msgs
   cv_bridge
@@ -92,6 +94,7 @@ target_include_directories(mask_tracker_node PRIVATE
 
 ament_target_dependencies(mask_tracker_node
   rclcpp
+  image_transport
   sensor_msgs
   geometry_msgs
   cv_bridge

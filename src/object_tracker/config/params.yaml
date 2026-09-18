@@ -89,4 +89,7 @@
 
     # Debug
     debug.enable: true
-    debug.img: true
+    debug.img: true                  # publish the debug image (drawn only while someone subscribes)
+    debug.image_topic: "/tracked_object/debug_image"  # image_transport: also .../compressed (JPEG) for viewing over WiFi
+    debug.image_rate_hz: 5.0         # max debug image rate; 0 = every frame
+    debug.window: false              # also show an OpenCV window (desktop with a display only, never on the Pi)
