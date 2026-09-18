@@ -110,6 +110,42 @@ install(TARGETS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+# VLM bridge: ZeroMQ client that turns server masks into mask_topic messages
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(ZMQ REQUIRED libzmq)
+find_package(nlohmann_json REQUIRED)
+
+add_executable(vlm_bridge_node
+  src/vlm_bridge_node.cpp
+)
+
+ament_target_dependencies(vlm_bridge_node
+  rclcpp
+  sensor_msgs
+  cv_bridge
+)
+
+target_include_directories(vlm_bridge_node PRIVATE
+  ${ZMQ_INCLUDE_DIRS}
+)
+
+target_link_libraries(vlm_bridge_node
+  ${OpenCV_LIBRARIES}
+  ${ZMQ_LIBRARIES}
+  nlohmann_json::nlohmann_json
+)
+
+install(TARGETS
+  vlm_bridge_node
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+# Mock VLM server for development (docs/vlm_transport.md section 9)
+install(PROGRAMS
+  scripts/mock_vlm_server.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 # Install launch, config and target images
 install(DIRECTORY launch config targets
   DESTINATION share/${PROJECT_NAME}

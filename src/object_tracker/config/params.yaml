@@ -80,7 +80,7 @@
     # Initial guesses: tune with the "init:" part of "Track stats"
     init.enable: false               # false: no mask subscription and no frame cache (file target only)
     mask_topic: "/tracked_object/init_mask"
-    init.cache_s: 3.0                # keep this many seconds of processed frames (about 1.2 MB per 848x480 frame)
+    init.cache_s: 7.0                # > vlm.timeout_s (6.0): a VLM answer takes ~3.4 s; ~1.2 MB per 848x480 frame (7 s at 30 fps ~ 260 MB)
     init.stamp_tolerance_s: 0.005    # max |mask stamp - cached frame stamp|
     init.depth_gate_m: 0.04          # drop mask pixels whose depth differs from the mask median by more than this
     init.min_mask_px: 400            # largest connected region must have at least this many pixels

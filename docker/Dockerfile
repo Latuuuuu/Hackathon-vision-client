@@ -41,6 +41,17 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=private \
         ros-humble-rmw-cyclonedds-cpp \
     && rm -rf /var/lib/apt/lists/*
 
+# VLM bridge: ZeroMQ (C API) + JSON for the client, pyzmq for the mock server.
+# cppzmq (the C++ header) is not in the Ubuntu 22.04 archive, so fetch the single header (MIT license).
+RUN --mount=type=cache,target=/var/cache/apt,sharing=private \
+    apt-get update && apt-get install -y \
+        libzmq3-dev \
+        nlohmann-json3-dev \
+        python3-zmq \
+    && rm -rf /var/lib/apt/lists/* \
+    && wget -q -O /usr/local/include/zmq.hpp \
+       https://raw.githubusercontent.com/zeromq/cppzmq/v4.9.0/zmq.hpp
+
 ARG USERNAME=vision
 ARG USER_UID=1000
 

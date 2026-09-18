@@ -19,7 +19,12 @@
   <depend>tf2_geometry_msgs</depend>
   <depend>ament_index_cpp</depend>
 
+  <!-- vlm_bridge_node: ZeroMQ + JSON; the cppzmq header comes from the Dockerfile -->
+  <depend>libzmq3-dev</depend>
+  <depend>nlohmann-json-dev</depend>
+
   <exec_depend>opencv</exec_depend>
+  <exec_depend>python3-zmq</exec_depend>
   <exec_depend>realsense2_camera</exec_depend>
 
   <export>
