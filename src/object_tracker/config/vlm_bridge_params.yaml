@@ -11,12 +11,12 @@
 
     vlm.enable: true
     vlm.endpoint: "tcp://192.168.50.125:5555"  # Hackathon-gpu (tentative)
-    vlm.timeout_s: 6.0                # give up waiting for a response; LA_MODE=slow / hybrid need 12.0
-    vlm.refresh_period_s: 8.0         # send again this long after the last request; keep well above inference time
+    vlm.timeout_s: 5.0                # give up waiting for a response; LA_MODE=slow / hybrid need 12.0
+    vlm.refresh_period_s: 0.0         # send again this long after the last request; keep well above inference time
     vlm.upload_max_width: 640         # resize before JPEG; should match the VLM input size (server rejects a long side > 1280)
     vlm.jpeg_quality: 80
     vlm.ping_period_s: 2.0            # 0 = off; measures network-only latency and picks up query_version changes
-    vlm.no_query_backoff_s: 5.0       # wait this long after the server answers NO_QUERY
+    vlm.no_query_backoff_s: 0.1       # wait this long after the server answers NO_QUERY
     vlm.error_backoff_s: 2.0          # wait this long after ERROR (e.g. "model loading") instead of resending at once
 
     debug.enable: true                # one "VLM stats" line every 2 s

@@ -3,4 +3,5 @@ prompts/*
 log/*
 install/*
 build/*
+capture/*
 !README.md

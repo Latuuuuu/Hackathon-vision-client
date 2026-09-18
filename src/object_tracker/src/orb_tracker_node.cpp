@@ -582,9 +582,15 @@ private:
         if (box.size() != 4) {
             return std::nullopt;
         }
-        // float bounding box (cv::boundingRect2f is not available in OpenCV 4.5)
-        const auto [min_x, max_x] = std::minmax({box[0].x, box[1].x, box[2].x, box[3].x});
-        const auto [min_y, max_y] = std::minmax({box[0].y, box[1].y, box[2].y, box[3].y});
+        // float bounding box (cv::boundingRect2f is not available in OpenCV 4.5);
+        // plain loop instead of std::minmax({...}), which triggers a -Wpsabi note on aarch64
+        float min_x = box[0].x, max_x = box[0].x, min_y = box[0].y, max_y = box[0].y;
+        for (const auto &p : box) {
+            min_x = std::min(min_x, p.x);
+            max_x = std::max(max_x, p.x);
+            min_y = std::min(min_y, p.y);
+            max_y = std::max(max_y, p.y);
+        }
         const float min_margin = static_cast<float>(kOrbEdgeThreshold + 8);
         const float margin_x = std::max((max_x - min_x) * static_cast<float>(roi_expand_ratio_), min_margin);
         const float margin_y = std::max((max_y - min_y) * static_cast<float>(roi_expand_ratio_), min_margin);
