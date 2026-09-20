@@ -95,7 +95,7 @@ m=140  i=138  r=0.99  e=0.40px  s=1.02  pts=138  t=5.7ms   ← 第 2 行：數�
 | `KLT_FEW_POINTS` | KLT 追蹤點太少。KLT 失敗後一定會接著跑 ORB，最終顯示的是 ORB 的結果，所以**目前 log 和視窗都看不到這個值** | `klt.min_points`、`klt.fb_max_px`、`klt.win_size` |
 | `CENTER_OUTSIDE` | 中心點在畫面外 | 物件只露出一部分 |
 | `NO_DEPTH` | 中心附近沒有有效深度，而且不適用預設深度：窗口內「太近」的值比「太遠」多、`depth_fallback.enable` 關閉，或框面積超過 `depth_fallback.max_box_area_px` | `depth_min_m`／`depth_max_m`、`depth_window`、`depth_fallback.*`、透明或反光物件 |
-| `TF_FAIL` | 轉不到 world_frame | 沒有 TF：桌面測試用 `world_frame:=camera_link` |
+| `TF_FAIL` | 轉不到 world_frame | 沒有 TF：桌面測試用 `world_frame:=camera_duck_link` |
 | `JUMP_UNCONFIRMED` | 位置跳動超過 `max_jump_m`，確認中 | `pose_filter.max_jump_m`、`hold.confirm_frames` |
 
 ---
@@ -114,8 +114,8 @@ m=140  i=138  r=0.99  e=0.40px  s=1.02  pts=138  t=5.7ms   ← 第 2 行：數�
 3. target 在**實際追蹤的距離**拍（ORB 容忍的尺度差距大約 3 倍以內）。
 4. 畫面夠亮、不模糊；自動曝光被燈光帶偏時改用手動曝光：
    ```bash
-   ros2 param set /camera_duck/camera depth_module.enable_auto_exposure false
-   ros2 param set /camera_duck/camera depth_module.exposure 8000
+   ros2 param set /camera_duck/camera_duck depth_module.enable_auto_exposure false
+   ros2 param set /camera_duck/camera_duck depth_module.exposure 8000
    ```
 5. 以上都做了還是不夠，再調第 3 節的「特徵與配對」參數。
 
@@ -241,7 +241,7 @@ A/B 比較時把 `roi.enable:=false klt.enable:=false`，偵測流程等同加�
 |---|---|
 | `FEW_MATCHES`，`m` 個位數 | target 用錯檔、物件不一致、target 太小或透明、距離差太多、太暗 → 回 Step 1 |
 | `FEW_INLIERS`，`i` 在 `min_inliers` 附近跳動 | 門檻卡在邊緣 → 暫時調低 `min_inliers`，同時想辦法增加 `m` |
-| `r` 很高、`e` 很小，但還是 `TF_FAIL` | 偵測其實成功，是 TF 問題 → 桌面測試用 `world_frame:=camera_link` |
+| `r` 很高、`e` 很小，但還是 `TF_FAIL` | 偵測其實成功，是 TF 問題 → 桌面測試用 `world_frame:=camera_duck_link` |
 | 大角度就 `BAD_SHAPE` | 調大 `gate.max_side_ratio` |
 | 模糊時 `HIGH_REPROJ_ERROR` | 先改善曝光和模糊，再放寬 `gate.max_reproj_error_px` |
 | 框得到但 `NO_DEPTH` | 距離太近、透明或反光物件，或預設深度沒有啟用／框太大 → 調 `depth_*`、`depth_window`、`depth_fallback.*` |
@@ -288,15 +288,15 @@ ros2 run object_tracker frame_capture_node --ros-args -p save_dir:=src/object_tr
 # T3：錄影，按 Ctrl+C 停止
 mkdir -p bags
 ros2 bag record -o bags/20260917_bottle_S4_occlusion \
-  /camera_duck/camera/color/image_rect_raw \
-  /camera_duck/camera/color/camera_info \
-  /camera_duck/camera/aligned_depth_to_color/image_raw \
-  /camera_duck/camera/aligned_depth_to_color/camera_info \
+  /camera_duck/camera_duck/color/image_rect_raw \
+  /camera_duck/camera_duck/color/camera_info \
+  /camera_duck/camera_duck/aligned_depth_to_color/image_raw \
+  /camera_duck/camera_duck/aligned_depth_to_color/camera_info \
   /tf /tf_static
 ```
 
-- 要測 `world_frame:=map` 時，錄影的同時機器人端必須在發布 TF。桌面測試沒有機器人也可以錄，重播時改用 `world_frame:=camera_link`。
-- RealSense 預設的 `tf_publish_rate` 是 0，相機內部的 TF（`camera_link` → optical frame）只會出現在 `/tf_static`。
+- 要測 `world_frame:=map` 時，錄影的同時機器人端必須在發布 TF。桌面測試沒有機器人也可以錄，重播時改用 `world_frame:=camera_duck_link`。
+- RealSense 預設的 `tf_publish_rate` 是 0，相機內部的 TF（`camera_duck_link` → optical frame）只會出現在 `/tf_static`。
 
 **錄完一定要檢查：**
 ```bash
@@ -317,7 +317,7 @@ ros2 bag info bags/20260917_bottle_S4_occlusion
 ```markdown
 | 檔名 | target | 距離 | 光線 | world_frame | 事件時間點 | 備註 |
 |---|---|---|---|---|---|---|
-| 20260917_bottle_S4_occlusion | bottle.png | ~25 cm | 室內燈 | camera_link | 8s 手半遮、11s 全遮、14s 移開 | |
+| 20260917_bottle_S4_occlusion | bottle.png | ~25 cm | 室內燈 | camera_duck_link | 8s 手半遮、11s 全遮、14s 移開 | |
 ```
 
 ### 6.5 情境清單
@@ -342,7 +342,7 @@ ros2 bag info bags/20260917_bottle_S4_occlusion
 ros2 run object_tracker orb_tracker_node --ros-args \
   --params-file install/object_tracker/share/object_tracker/config/params.yaml \
   -p use_sim_time:=true \
-  -p target_image_path:=bottle.png -p world_frame:=camera_link \
+  -p target_image_path:=bottle.png -p world_frame:=camera_duck_link \
   -p debug.enable:=true -p debug.img:=true
 
 # T2：node 起來之後再重播
@@ -419,7 +419,7 @@ Mask 介面（之後的 VLM bridge 也用這個）：
 ```bash
 ros2 launch object_tracker orb_tracker_bringup.launch.py \
   init.enable:=true launch_init_tool:=true target_image_path:="''" \
-  world_frame:=camera_color_optical_frame debug.img:=true delay_s:=1.5
+  world_frame:=camera_duck_color_optical_frame debug.img:=true delay_s:=1.5
 ```
 - `target_image_path` 要寫成 `"''"`（兩個引號字元）。`ros2 launch` 不接受 `target_image_path:=` 這種空值。
 - `delay_s:=`、`cache_s:=`、`use_grabcut:=`、`grabcut_iters:=` 會轉給 `mask_init_tool`。
@@ -432,7 +432,7 @@ ros2 launch object_tracker orb_tracker_bringup.launch.py \
 ros2 launch object_tracker orb_tracker_bringup.launch.py \
   launch_camera:=false use_sim_time:=true \
   init.enable:=true launch_init_tool:=true target_image_path:="''" \
-  world_frame:=camera_color_optical_frame debug.img:=true
+  world_frame:=camera_duck_color_optical_frame debug.img:=true
 
 # T2：node 起來之後再播
 ros2 bag play bags/<bag 名稱> --clock -r 0.5
@@ -575,7 +575,7 @@ debug 畫面：
 # T1：先開 tracker 和工具（sim time，不開相機）
 ros2 launch object_tracker mask_tracker_bringup.launch.py \
   launch_camera:=false use_sim_time:=true launch_init_tool:=true \
-  world_frame:=camera_color_optical_frame debug.img:=true delay_s:=1.5
+  world_frame:=camera_duck_color_optical_frame debug.img:=true delay_s:=1.5
 
 # T2：node 起來之後再播
 ros2 bag play bags/<bag 名稱> --clock -r 0.5
@@ -700,7 +700,7 @@ curl -X POST http://192.168.50.125:8080/api/query -H 'Content-Type: application/
 ros2 launch object_tracker vlm_bridge.launch.py
 
 # 3. tracker（不要開 launch_init_tool）
-ros2 launch object_tracker mask_tracker_bringup.launch.py world_frame:=camera_color_optical_frame debug.img:=true
+ros2 launch object_tracker mask_tracker_bringup.launch.py world_frame:=camera_duck_color_optical_frame debug.img:=true
 ```
 - server 用 `LA_MODE=slow` 或 `hybrid` 時，把逾時改成 `vlm.timeout_s:=12.0`（文件第 7、8 節：`fast` 約 3.4 秒，`slow`／`hybrid` 可能到 7.8 秒）。
 - 描述改了（`query_version` 增加），bridge 會在下一次 ping 或回應時發現，並立刻重送。
@@ -714,7 +714,7 @@ ros2 run object_tracker mock_vlm_server.py --delay-s 3.4
 ros2 launch object_tracker vlm_bridge.launch.py vlm.endpoint:=tcp://127.0.0.1:5555
 
 # T3：tracker
-ros2 launch object_tracker mask_tracker_bringup.launch.py world_frame:=camera_color_optical_frame debug.img:=true
+ros2 launch object_tracker mask_tracker_bringup.launch.py world_frame:=camera_duck_color_optical_frame debug.img:=true
 ```
 mock server 常用參數：
 
@@ -758,7 +758,7 @@ mock server 常用參數：
 | 一直 `Not connected` | server 沒開、IP 或 port 不對、防火牆沒開 5555/tcp |
 | 一直 `NO_QUERY` | 還沒用 HTTP 設定描述（10.2 第 1 步）；server 重啟後描述會清空 |
 | 常常 `timed out` | 推論時間超過 `vlm.timeout_s`；`slow`／`hybrid` 模式改 12.0 |
-| `MASK_FRAME_MISSING`，而且每次的 `mask_stamp` 都一樣、`cache [...]` 的範圍也不變 | bridge 和 tracker 都收不到新影像。先跑 `ros2 topic hz /camera_duck/camera/color/image_rect_raw`：**hz 正常就是 DDS 掉封包（第 11 節）**；hz 也沒有才是相機停了，看 realsense node 的 log |
+| `MASK_FRAME_MISSING`，而且每次的 `mask_stamp` 都一樣、`cache [...]` 的範圍也不變 | bridge 和 tracker 都收不到新影像。先跑 `ros2 topic hz /camera_duck/camera_duck/color/image_rect_raw`：**hz 正常就是 DDS 掉封包（第 11 節）**；hz 也沒有才是相機停了，看 realsense node 的 log |
 | 有 `FOUND` 但 tracker `MASK_FRAME_MISSING` | tracker 沒處理到那一幀（掉幀），或 `init.cache_s` 太短；推論約 3.4 秒時，`init.cache_s` 至少要大於 `vlm.timeout_s` |
 | `Mask cleaned` 的 pixels 很小或 `MASK_TOO_SMALL` | bbox 內背景比物件多，深度中位數落在背景上，切到的是背景（見 10.6） |
 | `NOT_FOUND` 一直出現 | VLM 找不到目標；先確認描述和畫面內容 |
@@ -782,7 +782,7 @@ mock server 常用參數：
 | 參數 | 各自的 yaml | `mask_tracker_params.yaml` + `vlm_bridge_params.yaml` 裡的 `vlm.*` |
 
 ```bash
-ros2 launch object_tracker mask_tracker_vlm_bringup.launch.py world_frame:=camera_color_optical_frame debug.img:=true
+ros2 launch object_tracker mask_tracker_vlm_bringup.launch.py world_frame:=camera_duck_color_optical_frame debug.img:=true
 # 例如改 server 位址：vlm.endpoint:=tcp://192.168.50.125:5555
 ```
 - log 和分開版相同：`Sent request`、`Mask published`、`VLM stats` 都印在 `mask_tracker_vlm_node` 底下。`MASK_RECEIVED` 後面會標 `(built-in VLM client)`。
@@ -837,3 +837,69 @@ grep Udp: /proc/net/snmp               # RcvbufErrors（第 5 個數字）隔幾
   - 讓 node 偵測到收不到影像時，自己重新訂閱。
   - 改用合併版 `mask_tracker_vlm_node`（10.7），color 只訂閱一份。
 
+
+---
+
+## 12. TF 關係
+
+### 12.1 這邊用到的 frame
+
+```
+map                                   ← world_frame（params 檔預設）
+ └── base_footprint                   ← 機器人端定位提供（我們不發）
+      └── camera_duck_link            ← 機器人的相機安裝位置（機器人端或 cam_tf 提供）
+           ├── camera_duck_color_frame
+           │    └── camera_duck_color_optical_frame   ← 影像 header.frame_id，3D 點算出來的座標系
+           └── camera_duck_depth_frame
+                └── camera_duck_depth_optical_frame
+map → tracked_object                  ← debug.enable 時 tracker 自己發，只是給 rviz 看
+```
+
+- `camera_duck_*` 由 realsense node 依 `camera_name` 組出來（`camera_name + "_link"`、`camera_name + "_color_optical_frame"`），**namespace 不影響 frame 名稱**。三個 bringup launch 的 `camera_name` 預設是 `camera_duck`。
+- tracker 每幀做的事：把相機座標的點（`camera_duck_color_optical_frame`）轉成 `world_frame`。轉不到就是 `TF_FAIL`，那一幀不發點。
+- `/tracked_object/size` 的 `frame_id` 是相機 optical frame，而且**不會**被轉到 world_frame。尺寸是長度不是位置，不需要轉。
+
+### 12.2 frame 名稱撞名（2026-09-20 實際踩到）
+
+同一個 ROS domain 上有兩台 RealSense 都用 `camera_name=camera` 時，兩邊的 `camera_link`、`camera_color_optical_frame` 完全同名。當時 `/tf_static` 上同時有：
+
+| 來源 | transform |
+|---|---|
+| 機器人的 launch | `base_footprint → camera_link` |
+| 另一個 node | `map → camera_link` |
+
+tf2 的樹裡一個 frame 只能有一個 parent，**後收到的會蓋掉前一個**，所以 `map → camera_color_optical_frame` 查不到：
+
+```
+Could not find a connection between 'map' and 'camera_color_optical_frame'
+because they are not part of the same tree. Tf has two or more unconnected trees.
+```
+
+處理方式：
+
+1. 相機改名成 `camera_duck`（已經是預設），frame 變 `camera_duck_link` 等等，不會再和別人撞。
+2. 不同隊、不同機器用不同的 `ROS_DOMAIN_ID`。
+3. **機器人上絕對不要開 `cam_tf.enable:=true`**：它發的是 `world_frame → cam_tf.child_frame`，等於多一個來源宣告相機 frame 的 parent。只有桌面測試、機器人端完全沒有發 TF 時才開。
+
+怎麼查：
+
+```bash
+ros2 run tf2_ros tf2_echo map camera_duck_color_optical_frame   # 查得到才會有輸出點
+ros2 topic echo /tf_static --field transforms | grep -E "frame_id|child_frame_id"
+ros2 run tf2_tools view_frames                                   # 產生 frames.pdf，看整棵樹
+```
+
+### 12.3 `tf.allow_latest_fallback`
+
+轉座標時先用**影像的時間戳**查 TF（等 `tf_timeout_s`，預設 0.05 秒）。查不到時：
+
+| 設定 | 行為 |
+|---|---|
+| `true`（預設） | 退回用**最新**的 TF，並每 5 秒警告一次，附上差了多久：`TF ... using the latest transform (stale by 1.925 s)` |
+| `false` | 這幀直接算 `TF_FAIL`，不發點，每 2 秒警告一次 |
+
+- 相機**固定不動**（桌面測試、固定機構）時 `true` 沒問題，TF 本來就不會變。
+- 相機**跟著機器人移動**時，`true` 等於拿「現在的機器人姿態」配「幾十毫秒前的影像」，機器人跑得越快誤差越大，建議設 `false`，寧可少發幾幀。
+- 一直看到這個警告，通常是機器人端的 `/tf` 發布率太低、有延遲，或者 `use_sim_time` 設錯。
+
+人工測資驗證：故意發一個時間戳落後 2 秒的 `map → camera_duck_color_optical_frame`，`true` 時警告 `stale by 1.925 s` 且照常輸出，`false` 時統計出現 `TF_FAIL=9`、完全不輸出。

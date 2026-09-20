@@ -42,7 +42,7 @@ ARGUMENTS = [
     DeclareLaunchArgument(
         "world_frame",
         default_value=UNSET,
-        description="Output frame; the robot TF tree must connect it to camera_link. Use camera_link for bench tests "
+        description="Output frame; the robot TF tree must connect it to camera_duck_link. Use camera_duck_link for bench tests "
                     "(unset = params file, else 'map')",
     ),
 
@@ -73,7 +73,7 @@ ARGUMENTS = [
     ),
     DeclareLaunchArgument(
         "camera_name",
-        default_value="camera",
+        default_value="camera_duck",
         description="Camera node name passed to rs_launch.py; also the TF prefix (<camera_name>_link)",
     ),
     DeclareLaunchArgument(
@@ -82,7 +82,7 @@ ARGUMENTS = [
         description="D405 color and depth profile (width,height,fps); keep both at the same fps for sync",
     ),
 
-    # Static camera TF (world_frame -> camera_link)
+    # Static camera TF (world_frame -> camera_duck_link)
     # The robot normally publishes this; enable only for standalone tests.
     DeclareLaunchArgument(
         "cam_tf.enable",
@@ -91,7 +91,7 @@ ARGUMENTS = [
     ),
     DeclareLaunchArgument(
         "cam_tf.child_frame",
-        default_value="camera_link",
+        default_value="camera_duck_link",
         description="Root frame of the RealSense TF tree",
     ),
     DeclareLaunchArgument("cam_tf.x", default_value="0.0", description="Camera X in world frame (m)"),
@@ -174,7 +174,7 @@ def launch_setup(context):
         return overrides.get(key, file_params.get(key, default))
 
     tool_params = {
-        'color_topic': effective('color_topic', '/camera_duck/camera/color/image_rect_raw'),
+        'color_topic': effective('color_topic', '/camera_duck/camera_duck/color/image_rect_raw'),
         'mask_topic': effective('mask_topic', '/tracked_object/init_mask'),
         'use_sim_time': use_sim_time,
     }

@@ -98,7 +98,7 @@ colcon build --packages-select object_tracker
 ros2 launch object_tracker mask_tracker_vlm_bringup.launch.py debug.img:=true
 ```
 
-輸出座標系預設是 `map`（params 檔的 `world_frame`），需要機器人端提供 `map` 到 `camera_link` 的 TF。沒有 TF 的桌面測試加上 `world_frame:=camera_color_optical_frame`，輸出就是相機座標。
+輸出座標系預設是 `map`（params 檔的 `world_frame`），需要機器人端提供 `map` 到 `camera_duck_link` 的 TF。沒有 TF 的桌面測試加上 `world_frame:=camera_duck_color_optical_frame`，輸出就是相機座標。
 
 **分開版（tracker 和 VLM bridge 各跑一個 process）**
 
@@ -125,9 +125,9 @@ ros2 run rqt_image_view rqt_image_view /tracked_object/debug_image/compressed
 
 | Topic | 型別 | 說明 |
 |---|---|---|
-| `/camera_duck/camera/color/image_rect_raw` | `sensor_msgs/Image` | D405 沒有獨立 RGB module，color 由 depth module 提供 |
-| `/camera_duck/camera/aligned_depth_to_color/image_raw` | `sensor_msgs/Image` | 需要 `align_depth.enable:=true`，launch 已經帶上 |
-| `/camera_duck/camera/color/camera_info` | `sensor_msgs/CameraInfo` | 內參 |
+| `/camera_duck/camera_duck/color/image_rect_raw` | `sensor_msgs/Image` | D405 沒有獨立 RGB module，color 由 depth module 提供 |
+| `/camera_duck/camera_duck/aligned_depth_to_color/image_raw` | `sensor_msgs/Image` | 需要 `align_depth.enable:=true`，launch 已經帶上 |
+| `/camera_duck/camera_duck/color/camera_info` | `sensor_msgs/CameraInfo` | 內參 |
 | `/tracked_object/init_mask` | `sensor_msgs/Image` (mono8) | 分開版才用；合併版走 process 內部佇列 |
 
 **發布**
@@ -138,13 +138,15 @@ ros2 run rqt_image_view rqt_image_view /tracked_object/debug_image/compressed
 | `/tracked_object/size` | `geometry_msgs/Vector3Stamped` | 每次 VLM 回應 | x=寬 y=高 z=深度（公尺），reliable + transient_local |
 | `/tracked_object/debug_image` | `sensor_msgs/Image` | ≤ 5 Hz | `debug.img:=true` 才發；`.../compressed` 適合無線看 |
 
-TF：`debug.enable` 開啟時會廣播 `tracked_object`。`world_frame` 預設 `map`，需要機器人端提供 `map` 到 `camera_link` 的 TF；桌面測試可以改用 `world_frame:=camera_color_optical_frame`，或用 `cam_tf.enable:=true` 自己發一個 static TF。
+TF：`debug.enable` 開啟時會廣播 `tracked_object`。`world_frame` 預設 `map`，需要機器人端提供 `map` 到 `camera_duck_link` 的 TF（`map → base_footprint → camera_duck_link`），轉不到的那一幀是 `TF_FAIL`，不會發點。桌面測試改用 `world_frame:=camera_duck_color_optical_frame`，或用 `cam_tf.enable:=true` 自己發一個 static TF（**機器人上不要開**，會和機器人端搶同一個 frame 的 parent）。相機會移動時建議把 `tf.allow_latest_fallback` 設成 `false`。整棵 TF 樹和排查方式見 [DEBUG.md](DEBUG.md) 第 12 節。
 
 ---
 
-## 5. 相機 namespace
+## 5. 相機 namespace 和 TF frame
 
-topic 前綴是 `/<camera_namespace>/<camera_name>/`，預設 **`/camera_duck/camera/`**，和 `src/realsense_ros` 的 `rs_launch.py` 一致。三個 bringup launch 都會把這兩個值明確傳給 `rs_launch.py`，所以不會因為 realsense 套件版本不同而跑掉。
+topic 前綴是 `/<camera_namespace>/<camera_name>/`，預設 **`/camera_duck/camera_duck/`**；三個 bringup launch 都會把這兩個值明確傳給 `rs_launch.py`，所以不會因為 realsense 套件版本不同而跑掉。
+
+**TF frame 名稱跟著 `camera_name` 走**（`camera_duck_link`、`camera_duck_color_optical_frame`…），和 namespace 無關。取名 `camera_duck` 就是為了不要和別人的相機撞名——同一個 domain 上有兩台相機都叫 `camera` 時，`camera_link` 會有兩個 parent，TF 樹會斷掉（[DEBUG.md](DEBUG.md) 12.2）。
 
 要改成別的 namespace：
 
@@ -226,6 +228,7 @@ Pi 沒有螢幕，`debug.window` 一律關著，要看畫面用 `debug.img:=true
 | `Depth ... != color ...` | `align_depth.enable` 沒開 |
 | 收到影像但幾乎沒有幀被處理 | UDP 緩衝不夠（第 8 節），或影像被別的 node 佔住頻寬 |
 | `MASK_FRAME_MISSING` 很多 | 掉幀，或 VLM 回應時間超過 `init.cache_s`；改用合併版 |
+| 一直 `TF_FAIL`、都不發點 | `ros2 run tf2_ros tf2_echo map camera_duck_color_optical_frame` 查得到嗎？TF 樹斷掉或 frame 撞名見 DEBUG.md 12.2 |
 | 追蹤一直 `NO_DEPTH` | D405 有效距離約 7～50 cm，太近或太遠都量不到 |
 
 更完整的對照表在 [DEBUG.md](DEBUG.md) 第 4 節。

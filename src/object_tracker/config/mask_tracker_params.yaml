@@ -3,11 +3,11 @@
     # All numeric values below are initial guesses: tune them with the "Track stats" debug log (see DEBUG.md)
 
     # D405: color comes from the depth module and is published as image_rect_raw
-    color_topic: "/camera_duck/camera/color/image_rect_raw"
-    depth_topic: "/camera_duck/camera/aligned_depth_to_color/image_raw"
-    camera_info_topic: "/camera_duck/camera/color/camera_info"
+    color_topic: "/camera_duck/camera_duck/color/image_rect_raw"
+    depth_topic: "/camera_duck/camera_duck/aligned_depth_to_color/image_raw"
+    camera_info_topic: "/camera_duck/camera_duck/color/camera_info"
     output_topic: "/object_goal_pose"
-    # Output frame; camera_color_optical_frame for bench tests, map on the robot
+    # Output frame; camera_duck_color_optical_frame for bench tests, map on the robot
     world_frame: "map"
 
     # Mask init: mono8, same size as color, non-zero = object, header.stamp = stamp of the color frame it belongs to
@@ -73,6 +73,10 @@
 
     # TF
     tf_timeout_s: 0.05
+    tf.allow_latest_fallback: true   # no TF at the image stamp: use the newest one (warns every 5 s).
+                                     # Right for a camera fixed in world_frame; on a moving robot it
+                                     # pairs the current pose with an older image, so set false there
+                                     # to drop the frame instead (status TF_FAIL).
 
     # Point filter
     pose_filter.enable: true

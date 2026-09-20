@@ -5,7 +5,7 @@
     # filled bbox and the trackers cut the object out with depth.
     # Defaults follow docs section 7 (measured on 2026-09-18 with LA_MODE=fast: rtt p50 3.44 s, max 3.71 s).
 
-    color_topic: "/camera_duck/camera/color/image_rect_raw"
+    color_topic: "/camera_duck/camera_duck/color/image_rect_raw"
     # Same interface as mask_init_tool; do not run both at the same time
     mask_topic: "/tracked_object/init_mask"
 

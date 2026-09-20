@@ -228,9 +228,9 @@ class OrbTrackerNode : public rclcpp::Node {
 public:
     OrbTrackerNode() : Node("orb_tracker_node") {
         this->declare_parameter<std::string>("target_image_path", "target.png");
-        this->declare_parameter<std::string>("color_topic", "/camera_duck/camera/color/image_rect_raw");
-        this->declare_parameter<std::string>("depth_topic", "/camera_duck/camera/aligned_depth_to_color/image_raw");
-        this->declare_parameter<std::string>("camera_info_topic", "/camera_duck/camera/color/camera_info");
+        this->declare_parameter<std::string>("color_topic", "/camera_duck/camera_duck/color/image_rect_raw");
+        this->declare_parameter<std::string>("depth_topic", "/camera_duck/camera_duck/aligned_depth_to_color/image_raw");
+        this->declare_parameter<std::string>("camera_info_topic", "/camera_duck/camera_duck/color/camera_info");
         this->declare_parameter<std::string>("output_topic", "/tracked_object/point");
         this->declare_parameter<std::string>("world_frame", "map");
         this->declare_parameter<int>("orb.n_features", 1000);
@@ -264,6 +264,7 @@ public:
         this->declare_parameter<double>("depth_fallback.value_m", 0.5);
         this->declare_parameter<double>("depth_fallback.max_box_area_px", 0.0);
         this->declare_parameter<double>("tf_timeout_s", 0.05);
+        this->declare_parameter<bool>("tf.allow_latest_fallback", true);
         this->declare_parameter<bool>("pose_filter.enable", true);
         this->declare_parameter<double>("pose_filter.alpha", 0.3);
         this->declare_parameter<double>("pose_filter.max_jump_m", 0.15);
@@ -327,6 +328,7 @@ public:
         depth_fallback_value_m_ = this->get_parameter("depth_fallback.value_m").as_double();
         depth_fallback_max_box_area_px_ = this->get_parameter("depth_fallback.max_box_area_px").as_double();
         tf_timeout_s_ = this->get_parameter("tf_timeout_s").as_double();
+        tf_allow_latest_fallback_ = this->get_parameter("tf.allow_latest_fallback").as_bool();
         pose_filter_enable_ = this->get_parameter("pose_filter.enable").as_bool();
         hold_enable_ = this->get_parameter("hold.enable").as_bool();
         hold_timeout_s_ = this->get_parameter("hold.timeout_s").as_double();
@@ -1086,12 +1088,27 @@ private:
             out = tf_buffer_->transform(in, world_frame_, tf2::durationFromSec(tf_timeout_s_));
             return true;
         } catch (const tf2::TransformException &) {
-            // fall back to the latest available transform (static camera mount)
+            // no transform at the image stamp; see tf.allow_latest_fallback below
+        }
+        if (!tf_allow_latest_fallback_) {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                                 "TF %s -> %s not available at the image stamp within %.3f s "
+                                 "(tf.allow_latest_fallback is off)",
+                                 in.header.frame_id.c_str(), world_frame_.c_str(), tf_timeout_s_);
+            return false;
         }
         try {
             auto tf_msg = tf_buffer_->lookupTransform(world_frame_, in.header.frame_id, tf2::TimePointZero);
             tf2::doTransform(in, out, tf_msg);
             out.header.stamp = in.header.stamp;
+            // fine for a camera that does not move in world_frame; on a moving robot this pairs the current
+            // robot pose with an older image, so the point lands off by however far the robot travelled
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                                 "TF %s -> %s not available at the image stamp, using the latest transform "
+                                 "(stale by %.3f s); on a moving camera this adds error",
+                                 in.header.frame_id.c_str(), world_frame_.c_str(),
+                                 std::abs(rclcpp::Time(in.header.stamp).seconds() -
+                                          rclcpp::Time(tf_msg.header.stamp).seconds()));
             return true;
         } catch (const tf2::TransformException &ex) {
             RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
@@ -1627,6 +1644,7 @@ private:
     double depth_fallback_value_m_ = 0.5;
     double depth_fallback_max_box_area_px_ = 0.0;
     double tf_timeout_s_ = 0.05;
+    bool tf_allow_latest_fallback_ = true;  // use the newest transform when none matches the image stamp
     bool has_intrinsics_ = false;
     double fx_ = 0.0, fy_ = 0.0, cx_ = 0.0, cy_ = 0.0;
 

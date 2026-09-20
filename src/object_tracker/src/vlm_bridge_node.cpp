@@ -17,7 +17,7 @@ using ImageMsg = sensor_msgs::msg::Image;
 class VlmBridgeNode : public rclcpp::Node {
 public:
     VlmBridgeNode() : Node("vlm_bridge_node") {
-        this->declare_parameter<std::string>("color_topic", "/camera_duck/camera/color/image_rect_raw");
+        this->declare_parameter<std::string>("color_topic", "/camera_duck/camera_duck/color/image_rect_raw");
         this->declare_parameter<std::string>("mask_topic", "/tracked_object/init_mask");
         this->declare_parameter<bool>("debug.enable", true);
 
