@@ -228,9 +228,9 @@ class OrbTrackerNode : public rclcpp::Node {
 public:
     OrbTrackerNode() : Node("orb_tracker_node") {
         this->declare_parameter<std::string>("target_image_path", "target.png");
-        this->declare_parameter<std::string>("color_topic", "/camera/camera/color/image_rect_raw");
-        this->declare_parameter<std::string>("depth_topic", "/camera/camera/aligned_depth_to_color/image_raw");
-        this->declare_parameter<std::string>("camera_info_topic", "/camera/camera/color/camera_info");
+        this->declare_parameter<std::string>("color_topic", "/camera_duck/camera/color/image_rect_raw");
+        this->declare_parameter<std::string>("depth_topic", "/camera_duck/camera/aligned_depth_to_color/image_raw");
+        this->declare_parameter<std::string>("camera_info_topic", "/camera_duck/camera/color/camera_info");
         this->declare_parameter<std::string>("output_topic", "/tracked_object/point");
         this->declare_parameter<std::string>("world_frame", "map");
         this->declare_parameter<int>("orb.n_features", 1000);

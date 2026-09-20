@@ -4,9 +4,9 @@
     target_image_path: "target.png"
 
     # D405: color comes from the depth module and is published as image_rect_raw
-    color_topic: "/camera/camera/color/image_rect_raw"
-    depth_topic: "/camera/camera/aligned_depth_to_color/image_raw"
-    camera_info_topic: "/camera/camera/color/camera_info"
+    color_topic: "/camera_duck/camera/color/image_rect_raw"
+    depth_topic: "/camera_duck/camera/aligned_depth_to_color/image_raw"
+    camera_info_topic: "/camera_duck/camera/color/camera_info"
     output_topic: "/tracked_object/point"
     # Output frame of /tracked_object/point
     # Debugging: camera_color_optical_frame (x right, y down, z forward = depth), needs no external TF

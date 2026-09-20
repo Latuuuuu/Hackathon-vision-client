@@ -14,7 +14,7 @@
 class FrameCaptureNode : public rclcpp::Node {
 public:
     FrameCaptureNode() : Node("frame_capture_node") {
-        this->declare_parameter<std::string>("color_topic", "/camera/camera/color/image_rect_raw");
+        this->declare_parameter<std::string>("color_topic", "/camera_duck/camera/color/image_rect_raw");
         this->declare_parameter<std::string>("save_dir", "captures");
         this->declare_parameter<std::string>("prefix", "frame");
         color_topic_ = this->get_parameter("color_topic").as_string();

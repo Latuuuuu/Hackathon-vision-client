@@ -3,10 +3,10 @@
     # All numeric values below are initial guesses: tune them with the "Track stats" debug log (see DEBUG.md)
 
     # D405: color comes from the depth module and is published as image_rect_raw
-    color_topic: "/camera/camera/color/image_rect_raw"
-    depth_topic: "/camera/camera/aligned_depth_to_color/image_raw"
-    camera_info_topic: "/camera/camera/color/camera_info"
-    output_topic: "/tracked_object/point"
+    color_topic: "/camera_duck/camera/color/image_rect_raw"
+    depth_topic: "/camera_duck/camera/aligned_depth_to_color/image_raw"
+    camera_info_topic: "/camera_duck/camera/color/camera_info"
+    output_topic: "/object_goal_pose"
     # Output frame; camera_color_optical_frame for bench tests, map on the robot
     world_frame: "camera_color_optical_frame"
 
@@ -48,6 +48,11 @@
                                        # inliers' median depth, else that median is used
     depth_fallback.value_m: 0.5
     depth_fallback.max_region_area_px: 0.0  # > 0: only for regions this small (far objects look small); 0 = no check
+
+    # Object size for the gripper, from the VLM bbox at the median object depth; one message per VLM answer
+    # (not per frame), transient_local. geometry_msgs/Vector3Stamped: x = width, y = height, z = depth (m)
+    size.enable: true
+    size.topic: "/tracked_object/size"
 
     # ROI search around the last region
     roi.expand_ratio: 0.5

@@ -62,6 +62,16 @@ ARGUMENTS = [
         description="Also launch realsense2_camera (D405) with aligned depth",
     ),
     DeclareLaunchArgument(
+        "camera_namespace",
+        default_value="camera_duck",
+        description="Camera namespace passed to rs_launch.py; topics are /<camera_namespace>/<camera_name>/...",
+    ),
+    DeclareLaunchArgument(
+        "camera_name",
+        default_value="camera",
+        description="Camera node name passed to rs_launch.py; also the TF prefix (<camera_name>_link)",
+    ),
+    DeclareLaunchArgument(
         "camera_profile",
         default_value="848,480,30",
         description="D405 color and depth profile (width,height,fps); keep both at the same fps for sync",
@@ -184,6 +194,8 @@ def generate_launch_description():
         ),
         condition=IfCondition(LaunchConfiguration("launch_camera")),
         launch_arguments={
+            'camera_namespace': LaunchConfiguration("camera_namespace"),
+            'camera_name': LaunchConfiguration("camera_name"),
             'align_depth.enable': 'true',
             'enable_sync': 'true',
             # D405 has no RGB module: color is configured on the depth module

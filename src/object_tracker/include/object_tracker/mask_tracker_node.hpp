@@ -6,6 +6,7 @@
 #include <sensor_msgs/image_encodings.hpp>
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <geometry_msgs/msg/vector3_stamped.hpp>
 #include <cv_bridge/cv_bridge.h>
 #include <image_transport/image_transport.hpp>
 #include <message_filters/subscriber.h>
@@ -193,6 +194,7 @@ struct CachedFrame {
     cv::Mat gray;
     cv::Mat depth;
     std::string depth_encoding;
+    std::string frame_id;  // color optical frame
 };
 
 // Candidate model from a mask, waiting to be found in the current frame
@@ -214,9 +216,9 @@ public:
     // subscribe_mask_topic = false: masks only come in through handle_mask() (mask_tracker_vlm_node)
     explicit MaskTrackerNode(const std::string &node_name = "mask_tracker_node", bool subscribe_mask_topic = true)
         : Node(node_name) {
-        this->declare_parameter<std::string>("color_topic", "/camera/camera/color/image_rect_raw");
-        this->declare_parameter<std::string>("depth_topic", "/camera/camera/aligned_depth_to_color/image_raw");
-        this->declare_parameter<std::string>("camera_info_topic", "/camera/camera/color/camera_info");
+        this->declare_parameter<std::string>("color_topic", "/camera_duck/camera/color/image_rect_raw");
+        this->declare_parameter<std::string>("depth_topic", "/camera_duck/camera/aligned_depth_to_color/image_raw");
+        this->declare_parameter<std::string>("camera_info_topic", "/camera_duck/camera/color/camera_info");
         this->declare_parameter<std::string>("output_topic", "/tracked_object/point");
         this->declare_parameter<std::string>("world_frame", "map");
         this->declare_parameter<std::string>("mask_topic", "/tracked_object/init_mask");
@@ -241,6 +243,8 @@ public:
         this->declare_parameter<int>("min_depth_points", 5);
         this->declare_parameter<std::string>("output.center_mode", "mask_center");
         this->declare_parameter<int>("output.center_depth_window", 5);
+        this->declare_parameter<bool>("size.enable", true);
+        this->declare_parameter<std::string>("size.topic", "/tracked_object/size");
         this->declare_parameter<double>("depth_min_m", 0.07);
         this->declare_parameter<double>("depth_max_m", 0.5);
         this->declare_parameter<bool>("depth_fallback.enable", true);
@@ -357,6 +361,11 @@ public:
         }
 
         point_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>(output_topic, 10);
+        if (this->get_parameter("size.enable").as_bool()) {
+            // one message per VLM answer; transient_local so a gripper node started later still gets the last one
+            size_pub_ = this->create_publisher<geometry_msgs::msg::Vector3Stamped>(
+                this->get_parameter("size.topic").as_string(), rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local());
+        }
         if (image_debug_) {
             const std::string debug_topic = this->get_parameter("debug.image_topic").as_string();
             debug_image_pub_ = image_transport::create_publisher(this, debug_topic);
@@ -405,12 +414,13 @@ protected:
     // Ring buffer of the last init.cache_s seconds of processed frames (image stamps).
     // Memory = frames * (W * H gray + W * H * depth bytes per pixel); at 848x480 with 16UC1 depth that is
     // 0.41 MB + 0.81 MB = 1.22 MB per frame, so 3 s at 30 fps (90 frames) is about 110 MB.
-    void cache_frame(const cv::Mat &gray, const cv::Mat &depth, const std::string &depth_encoding, double stamp_s) {
+    void cache_frame(const cv::Mat &gray, const cv::Mat &depth, const std::string &depth_encoding,
+                     const std::string &frame_id, double stamp_s) {
         if (!frame_cache_.empty() && stamp_s < frame_cache_.back().stamp_s) {
             // stamps went backwards (e.g. a restarted bag); old frames can no longer match a mask
             frame_cache_.clear();
         }
-        frame_cache_.push_back(CachedFrame{stamp_s, gray.clone(), depth.clone(), depth_encoding});
+        frame_cache_.push_back(CachedFrame{stamp_s, gray.clone(), depth.clone(), depth_encoding, frame_id});
         while (stamp_s - frame_cache_.front().stamp_s > init_cache_s_) {
             frame_cache_.pop_front();
         }
@@ -489,6 +499,7 @@ protected:
         const std::string gate_text = cleaned.d0 ? cv::format("d0=%.3fm", *cleaned.d0) : std::string("skipped");
         RCLCPP_INFO(this->get_logger(), "Mask cleaned: mask_stamp=%.3f pixels=%d depth_gate=%s removed=%d",
                     mask_stamp_s, cleaned.pixels, gate_text.c_str(), cleaned.depth_removed);
+        publish_size(frame, mask, cleaned.d0, mask_stamp_s);
 
         MaskModel model;
         model.source_stamp_s = mask_stamp_s;
@@ -510,6 +521,34 @@ protected:
         RCLCPP_INFO(this->get_logger(), "Mask model candidate: mask_stamp=%.3f features=%zu polygon=%zu pts, "
                     "waiting for handoff", mask_stamp_s, keypoints.size(), model.polygon_ref.size());
         return model;
+    }
+
+    // Object size from the VLM bbox (bounding rect of the incoming mask, i.e. the bbox itself for a bbox-only
+    // answer) at the median object depth d0: size = pixels * d0 / f. Published once per mask, not per frame.
+    // Vector3Stamped: x = width (image u direction), y = height (image v direction), z = d0; all in metres.
+    void publish_size(const CachedFrame &frame, const cv::Mat &mask, const std::optional<double> &d0,
+                      double mask_stamp_s) {
+        if (!size_pub_) {
+            return;
+        }
+        if (!d0 || !has_intrinsics_) {
+            RCLCPP_WARN(this->get_logger(), "Size not published for mask_stamp=%.3f: %s", mask_stamp_s,
+                        d0 ? "no camera_info yet" : "no in-range depth in the mask");
+            return;
+        }
+        const cv::Rect box = cv::boundingRect(mask);
+        const bool at_edge = box.x <= 0 || box.y <= 0 || box.x + box.width >= mask.cols ||
+                             box.y + box.height >= mask.rows;
+        geometry_msgs::msg::Vector3Stamped msg;
+        msg.header.stamp = rclcpp::Time(static_cast<int64_t>(std::llround(mask_stamp_s * 1e9)), RCL_ROS_TIME);
+        msg.header.frame_id = frame.frame_id;
+        msg.vector.x = box.width * *d0 / fx_;
+        msg.vector.y = box.height * *d0 / fy_;
+        msg.vector.z = *d0;
+        size_pub_->publish(msg);
+        RCLCPP_INFO(this->get_logger(), "Object size: mask_stamp=%.3f width=%.3fm height=%.3fm depth=%.3fm "
+                    "bbox=%dx%d px%s", mask_stamp_s, msg.vector.x, msg.vector.y, *d0, box.width, box.height,
+                    at_edge ? " (bbox touches the image edge, size is a lower bound)" : "");
     }
 
     // Look for the pending candidate in the whole current frame. While a candidate waits this is one extra
@@ -1289,7 +1328,7 @@ protected:
                 full_search_ = false;
             }
             process_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_start).count();
-            cache_frame(gray, depth, depth_msg->encoding, stamp_s);
+            cache_frame(gray, depth, depth_msg->encoding, color_msg->header.frame_id, stamp_s);
         }
         const bool found = (status == TrackStatus::OK);
 
@@ -1461,6 +1500,7 @@ protected:
     std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
     rclcpp::Subscription<ImageMsg>::SharedPtr mask_sub_;
     rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr point_pub_;
+    rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr size_pub_;  // null when size.enable is false
     std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;

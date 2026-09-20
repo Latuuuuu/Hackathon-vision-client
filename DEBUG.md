@@ -114,8 +114,8 @@ m=140  i=138  r=0.99  e=0.40px  s=1.02  pts=138  t=5.7ms   ← 第 2 行：數�
 3. target 在**實際追蹤的距離**拍（ORB 容忍的尺度差距大約 3 倍以內）。
 4. 畫面夠亮、不模糊；自動曝光被燈光帶偏時改用手動曝光：
    ```bash
-   ros2 param set /camera/camera depth_module.enable_auto_exposure false
-   ros2 param set /camera/camera depth_module.exposure 8000
+   ros2 param set /camera_duck/camera depth_module.enable_auto_exposure false
+   ros2 param set /camera_duck/camera depth_module.exposure 8000
    ```
 5. 以上都做了還是不夠，再調第 3 節的「特徵與配對」參數。
 
@@ -288,10 +288,10 @@ ros2 run object_tracker frame_capture_node --ros-args -p save_dir:=src/object_tr
 # T3：錄影，按 Ctrl+C 停止
 mkdir -p bags
 ros2 bag record -o bags/20260917_bottle_S4_occlusion \
-  /camera/camera/color/image_rect_raw \
-  /camera/camera/color/camera_info \
-  /camera/camera/aligned_depth_to_color/image_raw \
-  /camera/camera/aligned_depth_to_color/camera_info \
+  /camera_duck/camera/color/image_rect_raw \
+  /camera_duck/camera/color/camera_info \
+  /camera_duck/camera/aligned_depth_to_color/image_raw \
+  /camera_duck/camera/aligned_depth_to_color/camera_info \
   /tf /tf_static
 ```
 
@@ -634,6 +634,39 @@ ros2 bag play bags/<bag 名稱> --clock -r 0.5
 - Z 是物件**表面**的深度，不是物件體積中心的深度（和以前相同）。
 - mask 本身不準時（例如 bbox 內的深度切割切到背景，見 10.6），中心也會跟著不準。
 
+### 9.8 物體尺寸（給夾爪用）
+每收到一次 VLM 結果，就用 bbox 估一次物體的寬高，發到 `size.topic`（預設 `/tracked_object/size`）。**不是每幀都發**：VLM 多久回一次，就發幾次。
+
+- **型別**：`geometry_msgs/Vector3Stamped`，單位都是公尺：
+  - `x`：寬，影像水平（u）方向。
+  - `y`：高，影像垂直（v）方向。
+  - `z`：估算用的深度 d0。
+- **header**：`stamp` 是 VLM 算的那一幀的時間，`frame_id` 是 color 的 optical frame。
+- **算法**：`寬 = bbox 寬(px) × d0 / fx`，`高 = bbox 高(px) × d0 / fy`。
+  - bbox 是收到的 mask 的外接矩形。server 只回 bbox 時就是 bbox 本身，有回 mask 時是 mask 的外框。
+  - d0 是 bbox 內落在 `depth_min_m`～`depth_max_m` 的深度中位數，和 mask 清理用的是同一個值。
+- **QoS**：reliable + transient_local，depth 1。夾爪 node 晚啟動也拿得到最後一筆，訂閱端要用相同的 QoS：
+  ```bash
+  ros2 topic echo --qos-durability transient_local --qos-reliability reliable /tracked_object/size
+  ```
+- **不發的情況**：
+  - bbox 內沒有有效深度（太遠或太近）。
+  - 還沒收到 camera_info。
+  - mask 在 `MASK_FRAME_MISSING`、`MASK_BAD_SIZE`、`MASK_TOO_SMALL` 這些步驟就被擋掉。
+  - 被擋掉時 log 會出現 `Size not published ...`。
+- **log**：`Object size: mask_stamp=... width=0.083m height=0.083m depth=0.250m bbox=200x200 px`。
+- **關掉**：設 `size.enable: false`。
+- 分開版（`mask_tracker_node`）和合併版（`mask_tracker_vlm_node`）都有這個功能，`orb_tracker_node` 沒有。
+
+人工測資驗證（fx=600，200×200 px 的方塊，深度 0.25 m，理論值 200 × 0.25 / 600 = 0.0833 m）：兩個版本都輸出 `width=0.083m height=0.083m`。每 3 秒送一次 VLM 時，12 秒內發了 4 筆，同一段時間追蹤輸出約 150 幀。
+
+**限制**（實機上還沒量過誤差）：
+- **bbox 鬆，數值就偏大**：寬高直接取 VLM bbox，bbox 比物體大多少，估出來就大多少。
+- **斜放的物體會估大**：bbox 和影像軸對齊，斜放的物體量到的是外接矩形，不是物體本身的寬度。
+- **圓柱、球體會估小一點**：d0 是物體正面的表面深度，但輪廓邊緣在更遠的地方。例如半徑 3 cm 的杯子放在 20 cm 處，大約少估 13%。
+- **bbox 碰到畫面邊緣**：物體可能有一部分在畫面外，數值只是下限，log 會加註 `bbox touches the image edge`。
+- **只在 VLM 那一幀量**：之後物體靠近或遠離都不會更新，要等下一次 VLM 結果。
+
 ---
 
 ## 10. VLM bridge（送圖到上游 server）
@@ -725,7 +758,7 @@ mock server 常用參數：
 | 一直 `Not connected` | server 沒開、IP 或 port 不對、防火牆沒開 5555/tcp |
 | 一直 `NO_QUERY` | 還沒用 HTTP 設定描述（10.2 第 1 步）；server 重啟後描述會清空 |
 | 常常 `timed out` | 推論時間超過 `vlm.timeout_s`；`slow`／`hybrid` 模式改 12.0 |
-| `MASK_FRAME_MISSING`，而且每次的 `mask_stamp` 都一樣、`cache [...]` 的範圍也不變 | bridge 和 tracker 都收不到新影像。先跑 `ros2 topic hz /camera/camera/color/image_rect_raw`：**hz 正常就是 DDS 掉封包（第 11 節）**；hz 也沒有才是相機停了，看 realsense node 的 log |
+| `MASK_FRAME_MISSING`，而且每次的 `mask_stamp` 都一樣、`cache [...]` 的範圍也不變 | bridge 和 tracker 都收不到新影像。先跑 `ros2 topic hz /camera_duck/camera/color/image_rect_raw`：**hz 正常就是 DDS 掉封包（第 11 節）**；hz 也沒有才是相機停了，看 realsense node 的 log |
 | 有 `FOUND` 但 tracker `MASK_FRAME_MISSING` | tracker 沒處理到那一幀（掉幀），或 `init.cache_s` 太短；推論約 3.4 秒時，`init.cache_s` 至少要大於 `vlm.timeout_s` |
 | `Mask cleaned` 的 pixels 很小或 `MASK_TOO_SMALL` | bbox 內背景比物件多，深度中位數落在背景上，切到的是背景（見 10.6） |
 | `NOT_FOUND` 一直出現 | VLM 找不到目標；先確認描述和畫面內容 |

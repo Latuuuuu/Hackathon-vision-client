@@ -15,7 +15,7 @@
 class MaskInitTool : public rclcpp::Node {
 public:
     MaskInitTool() : Node("mask_init_tool") {
-        this->declare_parameter<std::string>("color_topic", "/camera/camera/color/image_rect_raw");
+        this->declare_parameter<std::string>("color_topic", "/camera_duck/camera/color/image_rect_raw");
         this->declare_parameter<std::string>("mask_topic", "/tracked_object/init_mask");
         this->declare_parameter<double>("cache_s", 3.0);
         this->declare_parameter<double>("delay_s", 1.5);

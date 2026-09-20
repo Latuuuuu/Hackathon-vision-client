@@ -5,12 +5,12 @@
     # filled bbox and the trackers cut the object out with depth.
     # Defaults follow docs section 7 (measured on 2026-09-18 with LA_MODE=fast: rtt p50 3.44 s, max 3.71 s).
 
-    color_topic: "/camera/camera/color/image_rect_raw"
+    color_topic: "/camera_duck/camera/color/image_rect_raw"
     # Same interface as mask_init_tool; do not run both at the same time
     mask_topic: "/tracked_object/init_mask"
 
     vlm.enable: true
-    vlm.endpoint: "tcp://192.168.50.125:5555"  # Hackathon-gpu (tentative)
+    vlm.endpoint: "tcp://192.168.68.51:5555"  # Hackathon-gpu (tentative)
     vlm.timeout_s: 5.0                # give up waiting for a response; LA_MODE=slow / hybrid need 12.0
     vlm.refresh_period_s: 0.0         # send again this long after the last request; keep well above inference time
     vlm.upload_max_width: 640         # resize before JPEG; should match the VLM input size (server rejects a long side > 1280)
