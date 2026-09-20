@@ -10,13 +10,16 @@ services:
         USER_UID: ${USER_UID:-1000}
     image: hackathon-vision-client:latest
     container_name: hackathon-vision-client-ws
+    # keep running after a crash and start again on boot; "docker compose stop" stays stopped
+    restart: unless-stopped
     stdin_open: true
     tty: true
     privileged: true
     network_mode: host
     # share IPC with host so X11 MIT-SHM works for OpenCV imshow
     ipc: host
-    # command: bash -c "${LAUNCH_SCRIPT}"
+    # "docker compose up -d" starts the tracker straight away; see docker/start_tracking.sh
+    command: ["bash", "-lc", "/home/vision/vision_ws/docker/start_tracking.sh"]
     working_dir: /home/vision/vision_ws
     <<: *ros2-vars
     environment:
@@ -26,6 +29,11 @@ services:
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
       - CYCLONEDDS_URI=file:///home/vision/vision_ws/config/cyclonedds.xml
       - ROS_WORKSPACE=/home/vision/vision_ws
+      # autostart settings (override in docker/.env or on the command line)
+      - AUTOSTART=${AUTOSTART:-1}                 # 0 = idle container, launch by hand
+      - AUTO_BUILD=${AUTO_BUILD:-0}               # 1 = colcon build on every start
+      - LAUNCH_FILE=${LAUNCH_FILE:-mask_tracker_vlm_bringup.launch.py}
+      - LAUNCH_ARGS=${LAUNCH_ARGS:-debug.img:=true}
     volumes:
       - /dev:/dev
       - /tmp/.X11-unix:/tmp/.X11-unix

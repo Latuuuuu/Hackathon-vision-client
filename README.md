@@ -47,10 +47,29 @@ container 內已經裝好的東西（`docker/Dockerfile`）：ROS Humble base、
 git clone <repo> Hackathon-vision-client
 cd Hackathon-vision-client/docker
 docker compose build          # 第一次會比較久
-docker compose up -d
-docker exec -it hackathon-vision-client-ws bash
+docker compose up -d          # 起來就直接開始追蹤
+docker compose logs -f        # 看 log
 ```
 
+`up -d` 會執行 `docker/start_tracking.sh`：第一次（`install/` 還不存在）會自動 `colcon build`，之後直接 `ros2 launch object_tracker mask_tracker_vlm_bringup.launch.py debug.img:=true`。
+
+```bash
+docker compose stop                          # 停掉
+docker compose up -d --force-recreate        # 改完程式或設定後重啟
+docker exec -it hackathon-vision-client-ws bash   # 另外開一個 shell 下指令
+```
+
+**改自動啟動的行為**：在 `docker/` 下建一個 `.env`（或在命令列前面加環境變數），然後重新 `up -d`：
+
+| 變數 | 預設 | 作用 |
+|---|---|---|
+| `AUTOSTART` | `1` | `0` = 只開 container 不啟動，跟以前一樣自己進去跑 |
+| `AUTO_BUILD` | `0` | `1` = 每次啟動前都先 `colcon build` |
+| `LAUNCH_FILE` | `mask_tracker_vlm_bringup.launch.py` | 換成分開版或 orb 版的 launch |
+| `LAUNCH_ARGS` | `debug.img:=true` | 任何 launch 參數，例如 `"debug.img:=true vlm.endpoint:=tcp://192.168.50.125:5555"` |
+
+- `restart: unless-stopped`：node 掛掉會自動重起，機器重開機（docker 服務起來後）也會自動跑。用 `docker compose stop` 停掉的話就會維持停著，不會自己回來。
+- 開機自動啟動要靠 docker 服務本身，Pi 上確認一次：`sudo systemctl is-enabled docker`。
 - 專案目錄會掛進 container 的 `/home/vision/vision_ws`，在 host 或 container 內改檔案都通。
 - compose 設定的重點：`network_mode: host`、`privileged`（RealSense 需要）、`ROS_DOMAIN_ID=59`、`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`、`CYCLONEDDS_URI` 指到 `config/cyclonedds.xml`。
 - 要用 OpenCV 視窗（`debug.window:=true`）的話，在 host 先跑 `xhost +local:docker`。Pi 上沒有螢幕，不要開。
@@ -71,9 +90,9 @@ source install/setup.bash
 colcon build --packages-select object_tracker
 ```
 
-### 3.3 跑起來
+### 3.3 手動跑（`AUTOSTART=0`，或在另一個 shell 裡）
 
-**合併版（相機 + 追蹤 + VLM client 一起起來，部署用這個）**
+**合併版（相機 + 追蹤 + VLM client 一起起來，部署用這個；也是自動啟動跑的那一個）**
 
 ```bash
 ros2 launch object_tracker mask_tracker_vlm_bringup.launch.py debug.img:=true
@@ -226,7 +245,7 @@ src/object_tracker/
   config/     參數檔
   scripts/    mock_vlm_server.py
 src/realsense_ros/   realsense-ros 原始碼（camera_namespace 預設為 camera_duck）
-docker/              Dockerfile、compose.yaml
+docker/              Dockerfile、compose.yaml、start_tracking.sh（自動啟動）
 config/cyclonedds.xml
 ```
 
