@@ -1,6 +1,5 @@
 x-common-vars: &ros2-vars
   environment:
-    - ROS_DOMAIN_ID=0
 
 services:
   hackathon-vision-client-ws:
@@ -22,6 +21,7 @@ services:
     <<: *ros2-vars
     environment:
       - DISPLAY=${DISPLAY}
+      - ROS_DOMAIN_ID=59
       - NO_AT_BRIDGE=1
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
       - CYCLONEDDS_URI=file:///home/vision/vision_ws/config/cyclonedds.xml
