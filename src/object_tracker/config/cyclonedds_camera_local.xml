@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- Cyclone DDS config for the RealSense node only: loopback interface only, so the camera images never leave this
+     machine. Other nodes on this host reach the camera through lo (their config must list lo as well, which
+     config/cyclonedds.xml does); nodes on other machines never discover it and no image is put on the network.
+     The tracker keeps using config/cyclonedds.xml, so its output topics stay visible to the robot.
+     Switch it off with camera_local_only:=false on the bringup launch (e.g. to view the raw image from a laptop). -->
+<CycloneDDS xmlns="https://cdds.io/config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
+    <Domain id="any">
+        <General>
+            <Interfaces>
+                <NetworkInterface name="lo" priority="default" multicast="true"/>
+            </Interfaces>
+            <AllowMulticast>spdp</AllowMulticast>
+            <MaxMessageSize>65500B</MaxMessageSize>
+        </General>
+        <Internal>
+            <!-- same reasoning as config/cyclonedds.xml: image fragments overflow the default receive buffer -->
+            <SocketReceiveBufferSize max="16MB"/>
+        </Internal>
+    </Domain>
+</CycloneDDS>

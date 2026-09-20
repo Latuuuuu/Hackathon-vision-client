@@ -3,7 +3,8 @@ import os
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
+from launch.actions import (DeclareLaunchArgument, GroupAction, IncludeLaunchDescription,
+                            OpaqueFunction, SetEnvironmentVariable)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -78,6 +79,12 @@ ARGUMENTS = [
         "launch_camera",
         default_value="true",
         description="Also launch realsense2_camera (D405) with aligned depth",
+    ),
+    DeclareLaunchArgument(
+        "camera_local_only",
+        default_value="true",
+        description="Start the camera with a Cyclone DDS config that only uses loopback, so its images stay on "
+                    "this machine (see DEBUG.md 13). false: images go on the network like any other topic",
     ),
     DeclareLaunchArgument(
         "camera_namespace",
@@ -227,21 +234,31 @@ def launch_setup(context):
 
 
 def generate_launch_description():
-    realsense = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(get_package_share_directory('realsense2_camera'), 'launch', 'rs_launch.py')
+    # the camera runs with its own Cyclone config (loopback only) unless camera_local_only:=false;
+    # scoped=True keeps the environment change inside this group, so the tracker keeps CYCLONEDDS_URI
+    realsense = GroupAction([
+        SetEnvironmentVariable(
+            "CYCLONEDDS_URI",
+            "file://" + os.path.join(get_package_share_directory("object_tracker"), "config",
+                                     "cyclonedds_camera_local.xml"),
+            condition=IfCondition(LaunchConfiguration("camera_local_only")),
         ),
-        condition=IfCondition(LaunchConfiguration("launch_camera")),
-        launch_arguments={
-            'camera_namespace': LaunchConfiguration("camera_namespace"),
-            'camera_name': LaunchConfiguration("camera_name"),
-            'align_depth.enable': 'true',
-            'enable_sync': 'true',
-            # D405 has no RGB module: color is configured on the depth module
-            'depth_module.color_profile': LaunchConfiguration("camera_profile"),
-            'depth_module.depth_profile': LaunchConfiguration("camera_profile"),
-        }.items(),
-    )
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(get_package_share_directory('realsense2_camera'), 'launch', 'rs_launch.py')
+            ),
+            condition=IfCondition(LaunchConfiguration("launch_camera")),
+            launch_arguments={
+                'camera_namespace': LaunchConfiguration("camera_namespace"),
+                'camera_name': LaunchConfiguration("camera_name"),
+                'align_depth.enable': 'true',
+                'enable_sync': 'true',
+                # D405 has no RGB module: color is configured on the depth module
+                'depth_module.color_profile': LaunchConfiguration("camera_profile"),
+                'depth_module.depth_profile': LaunchConfiguration("camera_profile"),
+            }.items(),
+        ),
+    ], scoped=True)
 
     ld = LaunchDescription(ARGUMENTS)
 

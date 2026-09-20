@@ -72,6 +72,7 @@ docker exec -it hackathon-vision-client-ws bash   # 另外開一個 shell 下指
 - 開機自動啟動要靠 docker 服務本身，Pi 上確認一次：`sudo systemctl is-enabled docker`。
 - 專案目錄會掛進 container 的 `/home/vision/vision_ws`，在 host 或 container 內改檔案都通。
 - compose 設定的重點：`network_mode: host`、`privileged`（RealSense 需要）、`ROS_DOMAIN_ID=59`、`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`、`CYCLONEDDS_URI` 指到 `config/cyclonedds.xml`。
+- **相機影像只留在本機**：bringup launch 會讓 realsense 那個 process 改用只開 loopback 的 Cyclone 設定，所以 `/camera_duck/camera_duck/*`（和相機發的 TF）不會上網路，別台機器看不到。要看畫面用 `/tracked_object/debug_image/compressed`；真的需要原始影像時加 `camera_local_only:=false`（[DEBUG.md](DEBUG.md) 第 13 節）。
 - 要用 OpenCV 視窗（`debug.window:=true`）的話，在 host 先跑 `xhost +local:docker`。Pi 上沒有螢幕，不要開。
 
 ### 3.2 編譯

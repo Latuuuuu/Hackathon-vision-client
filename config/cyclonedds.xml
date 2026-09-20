@@ -2,6 +2,13 @@
 <CycloneDDS xmlns="https://cdds.io/config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
     <Domain id="any">
         <General>
+            <!-- lo is needed to talk to the camera, which is started with config/cyclonedds_camera_local.xml and
+                 only listens on loopback (see DEBUG.md 13). Cyclone only uses a loopback locator for participants
+                 on the same host, so other machines still reach this node over the first interface. -->
+            <Interfaces>
+                <NetworkInterface autodetermine="true" priority="default" multicast="default"/>
+                <NetworkInterface name="lo" priority="0" multicast="true"/>
+            </Interfaces>
             <AllowMulticast>spdp</AllowMulticast>
             <MaxMessageSize>65500B</MaxMessageSize>
         </General>

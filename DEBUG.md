@@ -903,3 +903,49 @@ ros2 run tf2_tools view_frames                                   # 產生 frames
 - 一直看到這個警告，通常是機器人端的 `/tf` 發布率太低、有延遲，或者 `use_sim_time` 設錯。
 
 人工測資驗證：故意發一個時間戳落後 2 秒的 `map → camera_duck_color_optical_frame`，`true` 時警告 `stale by 1.925 s` 且照常輸出，`false` 時統計出現 `TF_FAIL=9`、完全不輸出。
+
+---
+
+## 13. 把影像鎖在本機（Cyclone 設定）
+
+相機的影像很大（848×480 rgb8 約 1.2 MB 一張，30 fps 約 36 MB/s）。只要網路上有人訂閱，這些資料就會擠爆 WiFi，別台機器的 rviz 不小心開著就會拖垮整個 DDS。
+
+做法：**相機那個 process 用一份只開 loopback 的 Cyclone 設定**，tracker 維持原本的設定。
+
+| Process | 設定檔 | 介面 |
+|---|---|---|
+| realsense2_camera | `src/object_tracker/config/cyclonedds_camera_local.xml` | 只有 `lo` |
+| tracker、bridge、其他 | `config/cyclonedds.xml` | 網卡 + `lo` |
+
+三個 bringup launch 會用 `GroupAction(scoped=True)` + `SetEnvironmentVariable` 只對相機那個 process 改 `CYCLONEDDS_URI`，不影響同一個 launch 裡的其他 node。要關掉就加 `camera_local_only:=false`（例如想從筆電看原始影像時）。
+
+`config/cyclonedds.xml` 多了 `lo`，因為只有自己也監聽 loopback 才能跟相機溝通。Cyclone 只會對**同一台機器**的參與者使用 loopback locator，所以對外的 topic 不受影響。
+
+### 為什麼不是用別的寫法
+
+實測過兩種，都不能用：
+
+| 寫法 | 結果 |
+|---|---|
+| `IgnoredPartitions`（`*.rt/camera_duck/*`） | 整個 topic 被停掉，**同一台機器上另一個 process 也收不到**（`ros2 topic hz` 顯示 does not appear to be published）。相機和 tracker 是兩個 process，所以不能用 |
+| `NetworkPartition` 指到 `127.0.0.1` | 位址不在已啟用的介面上時直接啟動失敗；把 `lo` 加進介面後雖然能跑，但 trace 顯示 writer 的 addrset 仍然是對方的網卡位址（`ddsi_rebuild_writer_addrset(...): udp/192.168.x.x:35971`），沒有真的限制在本機 |
+
+### 驗證
+
+| 測試 | 結果 |
+|---|---|
+| 相機（lo-only）→ tracker（專案設定），同一台機器 | 10 Hz，正常 |
+| tracker（專案設定）→ 只開網卡的設定（模擬別台機器的 node） | 10 Hz，正常 |
+| lo-only 那個 process 的 Cyclone trace | 送出去的位址只有 `udp/127.0.0.1:*` 和 lo 上的 SPDP multicast；出現的 `192.168.x.x` 全部是 `recv:`（收到別人的封包），沒有一筆是送出 |
+| launch 起來之後看各 process 的環境變數 | realsense 是 `cyclonedds_camera_local.xml`，tracker 是 `config/cyclonedds.xml` |
+
+```bash
+# 確認某個 process 實際用的設定
+tr '\0' '\n' < /proc/<pid>/environ | grep CYCLONEDDS_URI
+```
+
+### 副作用
+
+- **相機那個 process 的所有東西都只在本機**，包括它發的 TF（`camera_duck_link` → optical frames，以及 `rs_launch.py` 順便發的 `base_footprint → camera_duck_link`）。別台機器看不到這些 TF，也看不到 `/camera_duck/camera_duck/*`。tracker 輸出的點已經是 `world_frame` 座標，不需要這些 TF，但如果機器人端有其他 node 靠相機 TF 做事，就要改用 `camera_local_only:=false`，或請它們自己發一份。
+- 要從別台機器看畫面，用 tracker 發的 `/tracked_object/debug_image/compressed`（tracker 用的是一般設定，看得到），不要去看原始影像。
+- 這個設定只對 Cyclone 有效。換成 Fast DDS 的話 `CYCLONEDDS_URI` 會被忽略，影像照樣上網路。
